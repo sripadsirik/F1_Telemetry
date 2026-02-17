@@ -25,15 +25,6 @@ MOTION_FMT = '<fffhhh' + 'hhh' + 'hhh' + 'hhh' + 'hhh'
 MOTION_SIZE = struct.calcsize(MOTION_FMT)
 
 # Lap data packet format (Packet ID 2) - F1 25
-# lastLapTime(I) currentLapTime(I) sector1MS(H) sector1Min(B)
-# sector2MS(H) sector2Min(B) deltaToFrontMS(H) deltaToFrontMin(B)
-# deltaToLeaderMS(H) deltaToLeaderMin(B) lapDistance(f) totalDistance(f)
-# safetyCarDelta(f) carPosition(B) currentLapNum(B) pitStatus(B)
-# numPitStops(B) sector(B) currentLapInvalid(B) penalties(B)
-# totalWarnings(B) cornerCuttingWarnings(B) numUnservedDriveThrough(B)
-# numUnservedStopGo(B) gridPosition(B) driverStatus(B) resultStatus(B)
-# pitLaneTimerActive(B) pitLaneTimeInLaneMS(H) pitStopTimerMS(H)
-# pitStopShouldServePen(B) speedTrapFastestSpeed(f) speedTrapFastestLap(B)
 LAP_DATA_FMT = '<IIHBHBHBHBfffBBBBBBBBBBBBBBHHBfB'
 LAP_DATA_SIZE = struct.calcsize(LAP_DATA_FMT)
 
@@ -52,7 +43,11 @@ print("Start driving in F1 25!")
 print("-" * 60)
 
 packet_count = 0
-current_udp_lap = 0
+display_lap = 0
+last_display_lap = None
+last_raw_lap_num = None
+last_lap_distance = None
+crossed_start_finish = False  # Track if we've crossed the start/finish line
 position_data = {}
 lap_data = {}
 
@@ -88,23 +83,45 @@ try:
                     offset = HEADER_SIZE + (player_car_index * LAP_DATA_SIZE)
                     if len(data) >= offset + LAP_DATA_SIZE:
                         lap = struct.unpack(LAP_DATA_FMT, data[offset:offset+LAP_DATA_SIZE])
-                        udp_lap = lap[14]
-                        display_lap = udp_lap - 1  # UDP lap 2 = game Lap 1
+                        lap_distance = lap[10]
+                        raw_lap_num = int(lap[14])
 
-                        if udp_lap != current_udp_lap:
-                            if display_lap >= 1:
-                                last_time = lap[0] / 1000.0
-                                time_str = f" (Lap {display_lap - 1}: {last_time:.3f}s)" if last_time > 0 else ""
-                                print(f"\n>>> LAP {display_lap} STARTED <<<{time_str}")
-                            current_udp_lap = udp_lap
+                        # Detect crossing the start/finish line
+                        # This happens when lap_distance transitions from negative to positive
+                        if last_lap_distance is not None and last_lap_distance < 0 and lap_distance >= 0:
+                            if not crossed_start_finish:
+                                crossed_start_finish = True
+                                print(f"\n>>> CROSSED START/FINISH - LAP 1 BEGINS <<<")
+                        
+                        # Calculate display lap number:
+                        # - Before crossing start/finish: Lap 0 (formation/outlap)
+                        # - After crossing: Use raw_lap_num from telemetry
+                        if not crossed_start_finish:
+                            current_lap_num = 0
+                        else:
+                            # Once we've crossed, trust the game's lap number
+                            current_lap_num = raw_lap_num
+
+                        # Emit lap-start events for subsequent laps (lap 2+)
+                        if last_display_lap is not None and current_lap_num > last_display_lap and current_lap_num > 1:
+                            last_time = lap[0] / 1000.0
+                            completed_lap = current_lap_num - 1
+                            time_str = f" (Lap {completed_lap}: {last_time:.3f}s)" if last_time > 0 else ""
+                            print(f"\n>>> LAP {current_lap_num} STARTED <<<{time_str}")
+
+                        display_lap = current_lap_num
+                        last_display_lap = current_lap_num
+                        last_raw_lap_num = raw_lap_num
+                        last_lap_distance = lap_distance
 
                         lap_data = {
                             'last_lap_time': lap[0] / 1000.0,
                             'current_lap_time': lap[1] / 1000.0,
                             'sector1_time': lap[2] / 1000.0,
                             'sector2_time': lap[4] / 1000.0,
-                            'lap_distance': lap[10],
+                            'lap_distance': lap_distance,
                             'current_lap_num': display_lap,
+                            'raw_current_lap_num': raw_lap_num,
                             'sector': lap[17]
                         }
 

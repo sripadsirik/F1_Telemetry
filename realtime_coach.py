@@ -33,7 +33,7 @@ class F1Coach:
         self.current_gear = 0
         self.current_throttle = 0
         self.current_brake = 0
-        self.current_lap_num = 0
+        self.current_lap_num = -1
         self.current_lap_time = 0
         self.current_delta = 0
 
@@ -67,17 +67,21 @@ class F1Coach:
         print(f"\n  {COACH_NAME}: Ready when you are. Complete a lap to set the baseline.\n")
 
     def _tts_worker(self):
-        # Initialize engine on THIS thread (pyttsx3 uses COM on Windows,
-        # which requires init and usage on the same thread)
-        engine = pyttsx3.init()
-        engine.setProperty('rate', 170)
-        engine.setProperty('volume', 1.0)
         while True:
             if self.tts_queue:
                 with self.tts_lock:
                     message = self.tts_queue.pop(0)
-                engine.say(message)
-                engine.runAndWait()
+                try:
+                    # Create fresh engine each time - pyttsx3 on Windows
+                    # breaks after first runAndWait() in a loop
+                    engine = pyttsx3.init()
+                    engine.setProperty('rate', 170)
+                    engine.setProperty('volume', 1.0)
+                    engine.say(message)
+                    engine.runAndWait()
+                    engine.stop()
+                except Exception as e:
+                    print(f"  [TTS Error: {e}]")
             time.sleep(0.05)
 
     def speak(self, message, force=False):
@@ -220,7 +224,9 @@ class F1Coach:
             self.last_cue_distance = -1000
             self.last_delta_distance = -1000
 
-            if lap_num >= 1:
+            if lap_num == 0:
+                self.speak("Connected. I can see the telemetry. Formation lap, take it easy.", force=True)
+            elif lap_num >= 1:
                 if self.reference is None:
                     self.speak(f"Lap {lap_num}. Push hard, this one sets the reference.", force=True)
                 else:
@@ -254,10 +260,10 @@ class F1Coach:
             delta_str = ""
             if self.reference is not None and self.current_delta != 0:
                 delta_str = f" | Delta: {self.current_delta:+.2f}s"
-            if lap_num >= 1:
-                print(f"  Lap {lap_num} | Dist: {self.current_lap_distance:4.0f}m | "
-                      f"Speed: {self.current_speed:3.0f} km/h | "
-                      f"Gear: {self.current_gear}{delta_str}")
+            label = "Formation" if lap_num == 0 else f"Lap {lap_num}"
+            print(f"  {label} | Dist: {self.current_lap_distance:4.0f}m | "
+                  f"Speed: {self.current_speed:3.0f} km/h | "
+                  f"Gear: {self.current_gear}{delta_str}")
 
 
 def main():
@@ -271,7 +277,8 @@ def main():
     print("  Waiting for F1 25 telemetry...\n")
 
     packet_count = 0
-    current_udp_lap = 0
+    last_lap_distance = None
+    crossed_start_finish = False  # Track if we've crossed the line
     lap_data = {}
 
     try:
@@ -290,13 +297,30 @@ def main():
                         offset = HEADER_SIZE + (player_car_index * LAP_DATA_SIZE)
                         if len(data) >= offset + LAP_DATA_SIZE:
                             lap = struct.unpack(LAP_DATA_FMT, data[offset:offset + LAP_DATA_SIZE])
-                            udp_lap = lap[14]
-                            display_lap = udp_lap - 1
-                            current_udp_lap = udp_lap
+                            lap_distance = lap[10]
+                            raw_lap_num = int(lap[14])
+
+                            # Detect crossing the start/finish line
+                            # This happens when lap_distance transitions from negative to positive
+                            if last_lap_distance is not None and last_lap_distance < 0 and lap_distance >= 0:
+                                if not crossed_start_finish:
+                                    crossed_start_finish = True
+                                    print(f"\n  >>> CROSSED START/FINISH - LAP 1 BEGINS <<<\n")
+
+                            # Calculate display lap number:
+                            # - Before crossing start/finish: Lap 0 (formation/outlap)
+                            # - After crossing: Use raw_lap_num from telemetry
+                            if not crossed_start_finish:
+                                current_lap_num = 0
+                            else:
+                                current_lap_num = raw_lap_num
+
+                            last_lap_distance = lap_distance
 
                             lap_data = {
-                                'lap_distance': lap[10],
-                                'current_lap_num': display_lap,
+                                'lap_distance': lap_distance,
+                                'current_lap_num': current_lap_num,
+                                'raw_current_lap_num': raw_lap_num,
                                 'current_lap_time': lap[1] / 1000.0,
                                 'last_lap_time': lap[0] / 1000.0,
                             }
@@ -318,7 +342,6 @@ def main():
                                     current_lap_time=lap_data['current_lap_time'],
                                     last_lap_time=lap_data['last_lap_time'],
                                 )
-
             except socket.timeout:
                 pass
 
@@ -331,7 +354,7 @@ def main():
             print(f"  Laps completed: {len(coach.completed_laps)}")
             print(f"  Fastest: Lap {coach.reference_lap_num} - {coach.reference_lap_time:.3f}s")
         coach.speak("Good session. See you next time.", force=True)
-        time.sleep(3)  # let TTS finish
+        time.sleep(3)
         sock.close()
 
 

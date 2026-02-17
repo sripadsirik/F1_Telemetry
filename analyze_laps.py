@@ -11,12 +11,17 @@ def analyze_laps(csv_file):
     df = pd.read_csv(csv_file)
     print(f"Loaded {len(df)} telemetry points\n")
 
-    # Get unique laps, skip formation (lap 0 and below)
+    # Get unique laps, skip formation lap (lap 0)
     all_laps = sorted(df['current_lap_num'].unique())
     racing_laps = [l for l in all_laps if l >= 1]
 
+    # Show what we found
+    if 0 in all_laps:
+        formation_pts = len(df[df['current_lap_num'] == 0])
+        print(f"Formation lap (Lap 0): {formation_pts} telemetry points - skipping\n")
+
     if not racing_laps:
-        print("No racing laps found!")
+        print("No racing laps found! Complete at least one timed lap.")
         return None
 
     print("=" * 70)
