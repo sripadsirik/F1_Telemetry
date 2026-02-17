@@ -4,6 +4,7 @@ import pandas as pd
 import pyttsx3
 import time
 import threading
+import queue
 
 # F1 25 UDP Settings
 UDP_IP = "0.0.0.0"
@@ -54,9 +55,9 @@ class F1Coach:
         self.last_delta_distance = -1000
         self.delta_callout_interval = 500  # call out delta every 500m
 
-        # Threading for TTS
-        self.tts_queue = []
-        self.tts_lock = threading.Lock()
+        # Threading for TTS - use Queue instead of list for thread safety
+        self.tts_queue = queue.Queue()
+        self.tts_running = True
         self.tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
         self.tts_thread.start()
 
@@ -67,33 +68,77 @@ class F1Coach:
         print(f"\n  {COACH_NAME}: Ready when you are. Complete a lap to set the baseline.\n")
 
     def _tts_worker(self):
-        while True:
-            if self.tts_queue:
-                with self.tts_lock:
-                    message = self.tts_queue.pop(0)
+        """TTS worker thread - creates fresh engine for each message."""
+        while self.tts_running:
+            try:
+                # Wait for a message with timeout so we can check tts_running
                 try:
-                    # Create fresh engine each time - pyttsx3 on Windows
-                    # breaks after first runAndWait() in a loop
+                    message = self.tts_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+
+                # Create a completely fresh engine for each message
+                engine = None
+                try:
                     engine = pyttsx3.init()
                     engine.setProperty('rate', 170)
                     engine.setProperty('volume', 1.0)
                     engine.say(message)
                     engine.runAndWait()
-                    engine.stop()
                 except Exception as e:
                     print(f"  [TTS Error: {e}]")
-            time.sleep(0.05)
+                finally:
+                    # Ensure engine is properly cleaned up
+                    if engine:
+                        try:
+                            engine.stop()
+                            del engine
+                        except:
+                            pass
+
+                self.tts_queue.task_done()
+
+            except Exception as e:
+                print(f"  [TTS Worker Error: {e}]")
 
     def speak(self, message, force=False):
         current_time = time.time()
         if not force and current_time - self.last_cue_time < self.time_cooldown:
             return
-        with self.tts_lock:
-            # Don't queue up too many messages
-            if len(self.tts_queue) < 3:
-                self.tts_queue.append(message)
+
+        # Don't queue up too many messages
+        if self.tts_queue.qsize() < 3:
+            self.tts_queue.put(message)
+
         self.last_cue_time = current_time
         print(f"  {COACH_NAME}: {message}")
+
+    def _format_time_speech(self, time_seconds):
+        """Format time for speech with exact decimals."""
+        mins = int(time_seconds // 60)
+        secs = time_seconds % 60
+        # Split seconds into whole and decimal parts
+        whole_secs = int(secs)
+        decimal_part = secs - whole_secs
+        # Get 3 decimal places
+        milliseconds = int(round(decimal_part * 1000))
+        
+        if mins > 0:
+            return f"{mins} minute {whole_secs} point {milliseconds:03d}"
+        else:
+            return f"{whole_secs} point {milliseconds:03d}"
+
+    def _format_delta_speech(self, delta):
+        """Format delta time for speech with exact decimals."""
+        abs_delta = abs(delta)
+        whole = int(abs_delta)
+        decimal_part = abs_delta - whole
+        milliseconds = int(round(decimal_part * 1000))
+        
+        if whole > 0:
+            return f"{whole} point {milliseconds:03d}"
+        else:
+            return f"0 point {milliseconds:03d}"
 
     def _finish_lap(self, lap_num, lap_time):
         if not self.current_lap_data or lap_time <= 0:
@@ -104,6 +149,7 @@ class F1Coach:
 
         mins = int(lap_time // 60)
         secs = lap_time % 60
+        time_speech = self._format_time_speech(lap_time)
 
         if self.reference is None or lap_time < self.reference_lap_time:
             old_ref = self.reference_lap_time
@@ -116,25 +162,27 @@ class F1Coach:
             print(f"{'='*70}\n")
 
             if old_ref is None:
-                self.speak(f"Nice one. {mins} {secs:.1f}. That's our baseline. "
+                self.speak(f"Nice one. {time_speech}. That's our baseline. "
                            "Now let's see if you can beat it.", force=True)
             else:
                 improvement = old_ref - lap_time
-                self.speak(f"Purple lap! {mins} {secs:.1f}. "
-                           f"That's {improvement:.1f} seconds faster. New reference set. Keep pushing.", force=True)
+                improvement_speech = self._format_delta_speech(improvement)
+                self.speak(f"Purple lap! {time_speech}. "
+                           f"That's {improvement_speech} seconds faster. New reference set. Keep pushing.", force=True)
         else:
             delta = lap_time - self.reference_lap_time
+            delta_speech = self._format_delta_speech(delta)
             print(f"\n{'='*70}")
             print(f"  LAP {lap_num} COMPLETE - {mins}:{secs:06.3f} (+{delta:.3f}s)")
             print(f"  Reference: Lap {self.reference_lap_num} - {self.reference_lap_time:.3f}s")
             print(f"{'='*70}\n")
 
             if delta < 0.5:
-                self.speak(f"{mins} {secs:.1f}. So close, just {delta:.1f} tenths off. You've got the pace.", force=True)
+                self.speak(f"{time_speech}. So close, just {delta_speech} off. You've got the pace.", force=True)
             elif delta < 2.0:
-                self.speak(f"{mins} {secs:.1f}. Plus {delta:.1f}. Not bad, but there's time on the table.", force=True)
+                self.speak(f"{time_speech}. Plus {delta_speech}. Not bad, but there's time on the table.", force=True)
             else:
-                self.speak(f"{mins} {secs:.1f}. We lost {delta:.1f} seconds there. Let's tighten it up.", force=True)
+                self.speak(f"{time_speech}. We lost {delta_speech} seconds there. Let's tighten it up.", force=True)
 
     def get_reference_at_distance(self, lap_distance):
         idx = (self.reference['lap_distance'] - lap_distance).abs().idxmin()
@@ -165,10 +213,11 @@ class F1Coach:
         if abs(self.current_lap_distance - self.last_delta_distance) >= self.delta_callout_interval:
             self.last_delta_distance = self.current_lap_distance
             if abs(self.current_delta) > 0.3:
+                delta_speech = self._format_delta_speech(self.current_delta)
                 if self.current_delta > 0:
-                    self.speak(f"Plus {self.current_delta:.1f}")
+                    self.speak(f"Plus {delta_speech}")
                 else:
-                    self.speak(f"Minus {abs(self.current_delta):.1f}")
+                    self.speak(f"Minus {delta_speech}")
 
         # Coaching cues (distance-based cooldown)
         if abs(self.current_lap_distance - self.last_cue_distance) < self.cue_cooldown:
@@ -265,6 +314,11 @@ class F1Coach:
                   f"Speed: {self.current_speed:3.0f} km/h | "
                   f"Gear: {self.current_gear}{delta_str}")
 
+    def shutdown(self):
+        """Clean shutdown of TTS thread."""
+        self.tts_running = False
+        self.tts_thread.join(timeout=2)
+
 
 def main():
     coach = F1Coach()
@@ -355,6 +409,7 @@ def main():
             print(f"  Fastest: Lap {coach.reference_lap_num} - {coach.reference_lap_time:.3f}s")
         coach.speak("Good session. See you next time.", force=True)
         time.sleep(3)
+        coach.shutdown()
         sock.close()
 
 
