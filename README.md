@@ -1,126 +1,189 @@
-# F1 25 Real-Time Telemetry Coach
+﻿# F1 Telemetry Coach (Marco v4)
 
-Your personal AI race engineer that helps you drive faster!
+Real-time race engineer for F1 25 with live audio coaching, session logging, lap analysis, and a phone dashboard.
 
-## 🎯 What This Does
+This repository currently has two layers:
+- Main app (`marco.py`) with modular backend (`marco_core.py`, `marco_web.py`) and phone frontend (`frontend/`)
+- Legacy/utility scripts (`telemetry_logger.py`, `realtime_coach.py`, `analyze_laps.py`, etc.)
 
-Listens to F1 25 telemetry in real-time and provides audio coaching:
-- "Brake now"
-- "Downshift to 4th" 
-- "Carry more speed"
-- "Get on throttle"
-- Live delta vs your best lap
+The recommended runtime is the modular Marco app.
 
-## 📁 Files You Have
+## What Marco Does
 
-1. **telemetry_logger.py** - Records telemetry while you drive
-2. **analyze_laps.py** - Finds your fastest lap and creates reference
-3. **realtime_coach.py** - The real-time coach that speaks to you
-4. **visualize_track.py** - Plots track maps
-5. **reference_lap.csv** - Your fastest lap data (created by analyze_laps.py)
+During a live session, Marco can:
+- Ingest F1 25 UDP telemetry (`2025` packet format)
+- Speak coaching callouts (braking, gear, speed, throttle, corner feedback)
+- Track invalid laps, warnings/penalties, crash events, and damage
+- Announce sector performance (purple/green/yellow) and full lap times
+- Build/update a reference lap from your fastest valid lap
+- Log telemetry per session to `session_data/session_.../telemetry.csv`
+- Show a phone dashboard with:
+  - live map + car marker
+  - speed/gear/lap/delta
+  - sector status rectangles
+  - fastest lap and lap history
+  - remote start/stop controls
 
-## 🚀 How to Use
+## Current Project Structure
 
-### Step 1: Record Some Laps
+- `marco.py`
+  - Main entrypoint and terminal menu
+  - Starts web server (if dependencies are installed)
+  - Handles phone-triggered mode starts while terminal is idle
 
+- `marco_core.py`
+  - Core coach logic and telemetry pipeline
+  - Track/corner analysis
+  - Session creation/logging/analysis/plotting functions
+  - Shared runtime state used by phone dashboard
+
+- `marco_web.py`
+  - Flask + Socket.IO server
+  - QR/url display in terminal
+  - `/state`, `/start/<mode>`, `/stop`, `/sessions`
+  - live telemetry/updates to phone clients
+
+- `frontend/`
+  - `index.html`: phone UI layout
+  - `styles.css`: phone UI styles
+  - `app.js`: phone UI logic (socket + polling fallback, rendering)
+
+- `session_data/`
+  - Created automatically
+  - Contains run folders (`session_###_timestamp`) with telemetry and references
+
+- `logs/`
+  - Older scripts output and examples
+
+## Requirements
+
+Python 3.10+ recommended.
+
+Core:
 ```bash
-python telemetry_logger.py
+pip install pandas pyttsx3
 ```
 
-- Drive 3-5 laps in F1 25 Time Trial
-- Press Ctrl+C when done
-- Data saved to `logs/telemetry_TIMESTAMP.csv`
-
-### Step 2: Find Your Fastest Lap
-
+Phone dashboard:
 ```bash
-python analyze_laps.py
+pip install flask flask-socketio qrcode[pil] simple-websocket
 ```
 
-- Analyzes all your laps
-- Identifies the fastest complete lap
-- Creates `logs/reference_lap.csv` (this is your coaching reference)
-- Shows comparison plots
-
-### Step 3: Get Real-Time Coaching
-
+Plotting (analysis charts):
 ```bash
-python realtime_coach.py
+pip install matplotlib numpy
 ```
 
-- Loads your reference lap
-- Starts listening for telemetry
-- **Go drive in F1 25!**
-- Listen to the audio coaching cues
-- Watch the console for live delta and distance updates
-
-### Step 4: Visualize Your Track
-
+Or install everything at once:
 ```bash
-python visualize_track.py
+pip install pandas pyttsx3 flask flask-socketio qrcode[pil] simple-websocket matplotlib numpy
 ```
 
-- Shows track map colored by speed
-- Shows direction arrows
-- Displays track statistics
+## F1 25 Telemetry Settings (Required)
 
-## ⚙️ F1 25 Settings
+In-game telemetry settings should be:
+- UDP Telemetry: `On`
+- UDP Broadcast Mode: `On`
+- UDP IP Address: `127.0.0.1` (same machine) or your PC LAN IP if needed
+- UDP Port: `20777`
+- UDP Send Rate: `60Hz` (or highest stable)
+- UDP Format: `2025`
+- Telemetry: `Public` (not Restricted)
 
-**CRITICAL - Set these in F1 25 Telemetry Settings:**
+If telemetry does not arrive, verify firewall rules allow Python/port `20777`.
 
-- UDP Telemetry: **ON**
-- UDP Broadcast Mode: **ON**  
-- UDP IP Address: **127.0.0.1**
-- UDP Port: **20777**
-- UDP Send Rate: **60Hz**
-- UDP Format: **2025**
-- Telemetry: **Public** (NOT Restricted)
+## Quick Start
 
-## 🎮 Workflow
-
-1. Record 3-5 laps → `telemetry_logger.py`
-2. Analyze and find fastest → `analyze_laps.py`
-3. Drive with live coaching → `realtime_coach.py`
-4. Review your lines → `visualize_track.py`
-5. Repeat to improve!
-
-## 💡 Tips
-
-- **Cooldowns:** Coach won't spam you - there's a 100m/2s cooldown between cues
-- **Priority:** Coach focuses on the most impactful mistakes (braking, gears, speed)
-- **Delta:** Positive = slower than reference, Negative = faster than reference
-- **Best practice:** Record 5+ laps to get a solid reference lap
-
-## 🐛 Troubleshooting
-
-**No telemetry packets?**
-- Check F1 25 telemetry settings (especially "Public" not "Restricted")
-- Change UDP IP in script to `0.0.0.0` if `127.0.0.1` doesn't work
-- Check Windows Firewall - allow Python
-
-**Coach not speaking?**
-- Make sure pyttsx3 is installed: `pip install pyttsx3`
-- Check your audio output isn't muted
-- TTS engine might need system dependencies (usually works on Windows)
-
-**Lap distance stuck at 0?**
-- Some F1 versions have lap distance issues
-- Use position data instead (we can implement this if needed)
-
-## 🔧 Requirements
-
+Run the app:
 ```bash
-pip install pandas matplotlib numpy pyttsx3
+python marco.py
 ```
 
-## 📊 Future Enhancements
+From terminal menu:
+- `1` Live Coaching Only
+- `2` Live Coaching + Telemetry Logging
+- `3` Analyze Past Session
+- `4` View Track Map from Session
+- `5` Exit
 
-- [ ] Visual dashboard with live track position
-- [ ] Corner-by-corner analysis
-- [ ] ML model for predictive coaching  
-- [ ] Setup comparison (different car setups)
-- [ ] Multi-lap strategy coaching
+Phone control:
+- Launching `marco.py` prints a QR and URL
+- Open the phone page on the same network
+- Start/stop sessions from phone or terminal
 
-## 🏁 Have Fun!
+## Runtime Behavior
 
-Drive fast, listen to the coach, and improve your lap times!
+### Session modes
+- Mode 1: coaching only
+- Mode 2: coaching + CSV logging per session folder
+
+### Reference lap
+- Fastest valid lap in-session becomes current reference
+- Reference updates live as you set better laps
+- Sector comparisons use best/reference timings
+
+### Phone dashboard state
+- Live values are streamed with Socket.IO
+- Fallback polling is active for resilience
+- Ending a session clears dashboard state so a new track starts clean
+
+## Session Data and Analysis
+
+When logging is enabled (mode 2), each run creates:
+- `session_data/session_###_YYYYMMDD_HHMMSS/telemetry.csv`
+- `session_data/session_###_YYYYMMDD_HHMMSS/reference_lap.csv` (when available)
+
+You can analyze from menu options 3 and 4:
+- Summary of laps (complete/invalid)
+- Fastest valid lap selection
+- Optional plots (track map, speed, throttle/brake, gear)
+
+## Troubleshooting
+
+### No coaching audio
+- Install `pyttsx3`
+- Check OS output device/mute
+- Keep app running in a normal desktop session
+
+### No phone dashboard
+- Install Flask/Socket.IO dependencies
+- Confirm phone and PC are on same network
+- Open printed URL manually if QR scan fails
+
+### Phone values update but map/dot missing
+- Make sure motion packets are being sent by game
+- Hard-refresh phone page after frontend changes
+- Verify `frontend/app.js` loaded (browser cache can hold old assets)
+
+### Session starts on terminal but not immediately on phone
+- Use current codebase (`marco.py` + `marco_web.py` + `frontend/`)
+- Ensure page is refreshed and websocket/poll fallback is active
+
+### Track changed but old map remains
+- Use Stop Session from phone or terminal
+- App now clears live phone state at session end
+
+## Legacy Scripts (Still Present)
+
+These scripts are older/alternate workflows and can still be used independently:
+- `telemetry_logger.py`
+- `realtime_coach.py`
+- `analyze_laps.py`
+- `visualize_track.py`
+- `f1_coach_v2.py`, `f1_coach_v3.py`, `marco_v1.py`
+
+They are not the primary path for the current modular phone-enabled app.
+
+## Development Notes
+
+- Main shared state lives in `marco_core.py` (`shared_state`)
+- Web server reads/writes through that shared state
+- Frontend is static files served from `frontend/`
+- If you change frontend files, hard-refresh mobile browser to bust cache
+
+## Suggested Next Improvements
+
+- Add `requirements.txt` or `pyproject.toml` for one-command setup
+- Add unit tests around lap/sector transition logic
+- Add explicit versioned API schema for phone state payload
+- Add optional multi-client session viewer and role controls
