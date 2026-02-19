@@ -15,6 +15,13 @@
             <div class="sector-box" id="sd2">S2</div>
             <div class="sector-box" id="sd3">S3</div>
         </div>
+        <div class="compare-controls">
+            <label><input type="checkbox" id="compareToggle" checked> Compare vs PB</label>
+            <select id="compareSource">
+                <option value="current">Current Lap</option>
+                <option value="last">Last Lap</option>
+            </select>
+        </div>
         <div class="delta-display delta-neutral" id="deltaDisplay">--</div>
         <canvas id="trackCanvas"></canvas>
         <div class="telemetry-bar">
@@ -31,7 +38,41 @@
             <span class="lap" id="fastestLapNo">--</span>
             <span class="time" id="fastestLapVal">--:--.---</span>
         </div>
+        <div class="optimal-row">
+            <span class="label">OPTIMAL</span>
+            <span class="time" id="optimalLapVal">--:--.---</span>
+            <span class="gain" id="optimalGainVal">--</span>
+        </div>
         <div class="lap-list" id="lapList"></div>
+
+        <div class="info-card">
+            <h3>Top Time Losses</h3>
+            <div class="info-list" id="timeLossList"></div>
+        </div>
+
+        <div class="info-card">
+            <h3>Consistency</h3>
+            <div class="info-list">
+                <div class="kv-row"><span>Lap sigma</span><span id="lapSigmaVal">--</span></div>
+                <div class="kv-row"><span>Most inconsistent</span><span id="mostInconsistentVal">--</span></div>
+                <div class="kv-row"><span>Most consistent</span><span id="mostConsistentVal">--</span></div>
+            </div>
+        </div>
+
+        <div class="info-card">
+            <h3>Driver Profile</h3>
+            <div class="tag-list" id="profileTags"></div>
+        </div>
+
+        <div class="info-card">
+            <h3>Skill Scores</h3>
+            <div id="skillBars"></div>
+        </div>
+
+        <div class="info-card">
+            <h3>Corner Mastery</h3>
+            <div class="info-list" id="cornerMasteryList"></div>
+        </div>
     </div>
 
     <div class="controls" id="controls">

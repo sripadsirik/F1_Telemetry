@@ -29,6 +29,8 @@ import random
 import re
 import json
 import logging
+import statistics
+import bisect
 from datetime import datetime
 
 # Optional imports
@@ -52,6 +54,56 @@ UDP_IP = "0.0.0.0"
 UDP_PORT = 20777
 SESSION_DATA_DIR = "session_data"
 COACH_NAME = "Marco"
+
+# Time-trial analytics settings
+HEATMAP_BIN_COUNT = 320
+CONSISTENCY_WINDOW_LAPS = 10
+CORNER_HISTORY_WINDOW = 12
+MAX_CORNER_CALLOUTS_PER_LAP = 4
+REPORT_INTERVAL_LAPS = 3
+
+# Corner coaching thresholds
+BRAKE_POINT_DIFF_M = 10.0
+ENTRY_SPEED_DIFF_KPH = 8.0
+APEX_SPEED_DIFF_KPH = 6.0
+EXIT_SPEED_DIFF_KPH = 8.0
+THROTTLE_POINT_DIFF_M = 15.0
+
+
+def _default_analytics_state():
+    return {
+        'reference_bins': [],
+        'current_lap_bins': [],
+        'segment_deltas': [],
+        'last_lap_segment_deltas': [],
+        'heatmap_points': [],
+        'bin_meta': {
+            'count': HEATMAP_BIN_COUNT,
+            'track_length': 0.0,
+        },
+        'corner_metrics': [],
+        'corner_mastery': [],
+        'consistency': {
+            'lap_sigma': None,
+            'sector_sigma': {'s1': None, 's2': None, 's3': None},
+            'most_inconsistent_corner': None,
+            'most_consistent_corner': None,
+            'braking_point_sigma': None,
+        },
+        'driver_profile': {
+            'tags': [],
+            'stats': {},
+        },
+        'skill_scores': {},
+        'optimal_lap': {
+            'sectors_best': None,
+            'bins_best': None,
+            'gain_vs_pb_sectors': None,
+            'gain_vs_pb_bins': None,
+        },
+        'time_loss_summary': [],
+        'session_report_summary': None,
+    }
 
 # Packet formats - F1 25
 HEADER_FMT = '<HBBBBBQfIIBB'
@@ -89,7 +141,13 @@ shared_state = {
     'speech_log': [],
     'fastest_lap': None,
     'sector_colors': {1: None, 2: None, 3: None},
+    **_default_analytics_state(),
 }
+
+
+def _reset_analytics_shared_state():
+    """Reset derived analytics fields used by the web UI."""
+    shared_state.update(_default_analytics_state())
 
 
 # =============================================================================
@@ -165,7 +223,13 @@ DIALOGUES = {
     'penalty_time': ["{seconds} second penalty."],
 
     # Braking
-    'brake_warning': ["Braking soon", "Big stop coming"],
+    'brake_warning': [
+        "Big stop coming",
+        "Heavy braking ahead",
+        "Braking zone ahead",
+        "Prepare for the stop",
+        "Hard braking next",
+    ],
     'brake_now': ["Brake", "Brake now"],
     'brake_with_gear': ["Brake, {gear}", "Brake, down to {gear}"],
 
@@ -200,14 +264,27 @@ DIALOGUES = {
     'corner_earlier_throttle': ["Turn {turn}, earlier throttle"],
     'corner_good_exit': ["Turn {turn}, good drive out"],
     'corner_good': ["Good turn {turn}"],
+    'corner_brake_earlier': ["Turn {turn}, brake earlier"],
+    'corner_focus_exit': ["Turn {turn}, prioritize exit speed"],
+    'corner_overslow_apex': ["Turn {turn}, don't over-slow apex"],
+    'corner_entry_speed': ["Turn {turn}, carry entry speed"],
+    'lap_time_loss_summary': ["Biggest loss, turn {turn}, plus {delta}"],
 
     # Session
     'session_end': ["Good session. See you next time.", "Session complete. Nice work."],
 }
 
+_LAST_SAY_BY_CATEGORY = {}
+
 def say(category, **kwargs):
     phrases = DIALOGUES.get(category, [category])
-    phrase = random.choice(phrases)
+    if len(phrases) > 1:
+        last_phrase = _LAST_SAY_BY_CATEGORY.get(category)
+        options = [p for p in phrases if p != last_phrase]
+        phrase = random.choice(options if options else phrases)
+    else:
+        phrase = phrases[0]
+    _LAST_SAY_BY_CATEGORY[category] = phrase
     return phrase.format(**kwargs) if kwargs else phrase
 
 
@@ -436,8 +513,16 @@ class TrackAnalyzer:
         self.corners = self.braking_zones + extra_corners
         self.corners.sort(key=lambda z: z['start_dist'])
 
+        if len(self.corners) < 3:
+            fallback_corners = self._build_fallback_corners(df)
+            if len(fallback_corners) > len(self.corners):
+                self.corners = fallback_corners
+
         for idx, zone in enumerate(self.corners, start=1):
             zone['turn_number'] = idx
+            zone['start_distance'] = zone['start_dist']
+            zone['apex_distance'] = zone['min_speed_dist']
+            zone['end_distance'] = zone['exit_dist']
 
         print(f"\n  Track Analysis:")
         print(f"  - Length: {self.track_length:.0f}m")
@@ -481,6 +566,57 @@ class TrackAnalyzer:
         extra_margin = speed_factor * 20
 
         return reaction_dist + safety_margin + extra_margin
+
+    def _build_fallback_corners(self, df):
+        """Fallback segmentation using brake spikes when corner extraction is sparse."""
+        fallback = []
+        in_zone = False
+        start_idx = None
+
+        for idx, row in df.iterrows():
+            if row['brake_smooth'] > 0.25 and not in_zone:
+                in_zone = True
+                start_idx = idx
+            elif in_zone and row['brake_smooth'] < 0.1:
+                end_idx = idx
+                in_zone = False
+                if start_idx is None or end_idx <= start_idx:
+                    continue
+
+                zone_data = df.iloc[start_idx:end_idx]
+                if len(zone_data) < 5:
+                    continue
+
+                start_dist = float(zone_data['lap_distance'].iloc[0])
+                end_dist = float(zone_data['lap_distance'].iloc[-1])
+                if end_dist - start_dist < 20:
+                    continue
+
+                min_speed_idx = zone_data['speed'].idxmin()
+                apex_dist = float(df.loc[min_speed_idx, 'lap_distance'])
+                min_speed = float(zone_data['speed'].min())
+
+                post_corner = df.iloc[min_speed_idx:min(min_speed_idx + 120, len(df))]
+                throttle_on = None
+                for _, sample in post_corner.iterrows():
+                    if sample['throttle'] > 0.5:
+                        throttle_on = float(sample['lap_distance'])
+                        break
+
+                fallback.append({
+                    'start_dist': start_dist,
+                    'end_dist': end_dist,
+                    'exit_dist': end_dist + 45,
+                    'entry_speed': float(zone_data['speed'].iloc[0]),
+                    'min_speed': min_speed,
+                    'min_speed_dist': apex_dist,
+                    'min_gear': int(zone_data['gear'].min()),
+                    'brake_start_dist': start_dist,
+                    'throttle_on_dist': throttle_on,
+                })
+
+        fallback.sort(key=lambda z: z['start_dist'])
+        return fallback
 
 
 # =============================================================================
@@ -600,10 +736,49 @@ class F1Coach:
         self.corner_feedback_given = set()
         self.current_lap_corner_data = {}  # {turn_num: {brake_dist, min_speed, throttle_dist}}
         self.corner_tracking_state = {}  # {turn_num: state}
+        self.corner_callouts_this_lap = 0
+        self.max_corner_callouts_per_lap = MAX_CORNER_CALLOUTS_PER_LAP
+
+        # Time-trial analytics state
+        self.reference_bin_times = []
+        self.reference_heatmap_points = []
+        self.current_lap_bin_times = [None] * HEATMAP_BIN_COUNT
+        self.current_segment_deltas = [None] * HEATMAP_BIN_COUNT
+        self.last_lap_segment_deltas = []
+        self.best_bin_segment_times = [None] * HEATMAP_BIN_COUNT
+        self.last_live_bin_index = None
+        self.valid_lap_times = []
+        self.sector_history = {1: [], 2: [], 3: []}
+        self.corner_history = {}  # per-turn rolling metrics
+        self.corner_mastery = []
+        self.reference_corner_metrics = {}
+        self.last_lap_corner_metrics = []
+        self.last_time_loss_summary = []
+        self.consistency_metrics = _default_analytics_state()['consistency']
+        self.profile_history = {
+            'peak_brake': [],
+            'brake_slope_peak': [],
+            'throttle_jerk': [],
+            'steer_rate': [],
+            'brake_point_diff': [],
+        }
+        self.driver_profile = {'tags': [], 'stats': {}}
+        self.skill_scores = {
+            'Braking Precision': 50.0,
+            'Throttle Smoothness': 50.0,
+            'Corner Exit Quality': 50.0,
+            'Consistency': 50.0,
+            'Line Adherence': 50.0,
+        }
+        self.optimal_lap = _default_analytics_state()['optimal_lap']
+        self.lap_performance_rows = []
+        self.last_report_data = None
+        self._last_lap_summary_tts = -1
 
         # Cooldowns
         self.cooldowns = {
             'brake': {'last_dist': -1000, 'cooldown': 120},
+            'brake_warn': {'last_dist': -1000, 'cooldown': 260},
             'gear': {'last_dist': -1000, 'cooldown': 80},
             'throttle': {'last_dist': -1000, 'cooldown': 150},
             'speed': {'last_dist': -1000, 'cooldown': 200},
@@ -612,6 +787,7 @@ class F1Coach:
             'damage': {'last_dist': -1000, 'cooldown': 500},
             'crash': {'last_dist': -1000, 'cooldown': 200},
             'corner': {'last_dist': -1000, 'cooldown': 200},
+            'lap_summary': {'last_dist': -1000, 'cooldown': 500},
         }
         self.last_cue_time = 0
         self.time_cooldown = 0.8
@@ -635,6 +811,8 @@ class F1Coach:
         if self.enable_logging and self.session_info:
             print(f"  Logging to: {self.session_info['csv_path']}")
 
+        _reset_analytics_shared_state()
+        self._sync_shared_performance_state()
         self.speak(say('intro'), force=True, priority=SmartTTSQueue.PRIORITY_HIGH)
         print(f"\n  {COACH_NAME}: Ready. Complete a lap to set baseline.\n")
 
@@ -750,6 +928,829 @@ class F1Coach:
             whole += 1
             frac = 0
         return f"{whole} point {frac}"
+
+    @staticmethod
+    def _clamp(value, lo, hi):
+        return max(lo, min(hi, value))
+
+    @staticmethod
+    def _stddev(values):
+        clean = [float(v) for v in values if v is not None]
+        if len(clean) < 2:
+            return 0.0
+        return float(statistics.pstdev(clean))
+
+    def _time_at_distance(self, df, target_distance):
+        if df is None or len(df) == 0:
+            return None
+
+        work = df.sort_values('lap_distance')
+        distances = work['lap_distance'].tolist()
+        times = work['current_lap_time'].tolist()
+        if not distances:
+            return None
+
+        d = float(target_distance)
+        if d <= distances[0]:
+            return float(times[0])
+        if d >= distances[-1]:
+            return float(times[-1])
+
+        idx = bisect.bisect_left(distances, d)
+        left_d = float(distances[idx - 1])
+        right_d = float(distances[idx])
+        left_t = float(times[idx - 1])
+        right_t = float(times[idx])
+        if right_d <= left_d:
+            return right_t
+        ratio = (d - left_d) / (right_d - left_d)
+        return left_t + ratio * (right_t - left_t)
+
+    def _value_at_distance(self, df, target_distance, column):
+        if df is None or len(df) == 0 or column not in df.columns:
+            return None
+
+        work = df.sort_values('lap_distance')
+        distances = work['lap_distance'].tolist()
+        values = work[column].tolist()
+        if not distances:
+            return None
+
+        d = float(target_distance)
+        if d <= distances[0]:
+            return float(values[0])
+        if d >= distances[-1]:
+            return float(values[-1])
+
+        idx = bisect.bisect_left(distances, d)
+        left_d = float(distances[idx - 1])
+        right_d = float(distances[idx])
+        left_v = float(values[idx - 1])
+        right_v = float(values[idx])
+        if right_d <= left_d:
+            return right_v
+        ratio = (d - left_d) / (right_d - left_d)
+        return left_v + ratio * (right_v - left_v)
+
+    def _build_bin_profile(self, lap_df):
+        if lap_df is None or len(lap_df) < 5:
+            return [], []
+
+        work = lap_df.sort_values('lap_distance').reset_index(drop=True)
+        work = work[work['lap_distance'] >= 0]
+        if len(work) < 5:
+            return [], []
+
+        track_length = None
+        if self.track_analyzer is not None:
+            track_length = float(self.track_analyzer.track_length)
+        if not track_length or track_length <= 0:
+            track_length = float(work['lap_distance'].max())
+        if track_length <= 0:
+            return [], []
+
+        dedup = work.drop_duplicates(subset=['lap_distance'], keep='first')
+        distances = dedup['lap_distance'].tolist()
+        times = dedup['current_lap_time'].tolist()
+        xs = dedup['pos_x'].tolist() if 'pos_x' in dedup.columns else None
+        zs = dedup['pos_z'].tolist() if 'pos_z' in dedup.columns else None
+
+        bin_times = []
+        bin_points = []
+        for i in range(HEATMAP_BIN_COUNT):
+            target = (track_length * i) / max(1, (HEATMAP_BIN_COUNT - 1))
+
+            if target <= distances[0]:
+                bin_times.append(float(times[0]))
+                if xs is not None and zs is not None:
+                    bin_points.append([float(xs[0]), float(zs[0])])
+                continue
+
+            if target >= distances[-1]:
+                bin_times.append(float(times[-1]))
+                if xs is not None and zs is not None:
+                    bin_points.append([float(xs[-1]), float(zs[-1])])
+                continue
+
+            idx = bisect.bisect_left(distances, target)
+            d0 = float(distances[idx - 1])
+            d1 = float(distances[idx])
+            t0 = float(times[idx - 1])
+            t1 = float(times[idx])
+            ratio = 1.0 if d1 <= d0 else (target - d0) / (d1 - d0)
+
+            interp_time = t0 + ratio * (t1 - t0)
+            bin_times.append(interp_time)
+
+            if xs is not None and zs is not None:
+                x0 = float(xs[idx - 1])
+                x1 = float(xs[idx])
+                z0 = float(zs[idx - 1])
+                z1 = float(zs[idx])
+                bin_points.append([
+                    x0 + ratio * (x1 - x0),
+                    z0 + ratio * (z1 - z0),
+                ])
+
+        return bin_times, bin_points
+
+    def _cumulative_to_segment_times(self, cumulative_times):
+        if not cumulative_times:
+            return []
+        segments = [None] * len(cumulative_times)
+        for i in range(1, len(cumulative_times)):
+            prev_t = cumulative_times[i - 1]
+            cur_t = cumulative_times[i]
+            if prev_t is None or cur_t is None:
+                continue
+            seg = cur_t - prev_t
+            if seg > 0:
+                segments[i] = seg
+        return segments
+
+    def _update_live_bin_deltas(self):
+        if not self.reference_bin_times or self.track_analyzer is None:
+            return
+        if self.current_lap_distance < 0 or self.current_lap_time <= 0:
+            return
+
+        track_length = float(self.track_analyzer.track_length or 0)
+        if track_length <= 0:
+            return
+
+        ratio = self._clamp(self.current_lap_distance / track_length, 0.0, 1.0)
+        idx = int(round(ratio * (HEATMAP_BIN_COUNT - 1)))
+        idx = max(0, min(HEATMAP_BIN_COUNT - 1, idx))
+
+        if self.last_live_bin_index is None:
+            self.current_lap_bin_times[idx] = self.current_lap_time
+            self.last_live_bin_index = idx
+        elif idx >= self.last_live_bin_index:
+            prev_idx = self.last_live_bin_index
+            prev_time = self.current_lap_bin_times[prev_idx]
+            self.current_lap_bin_times[idx] = self.current_lap_time
+            if prev_time is not None and idx > prev_idx + 1:
+                span = idx - prev_idx
+                for b in range(prev_idx + 1, idx):
+                    frac = (b - prev_idx) / span
+                    self.current_lap_bin_times[b] = prev_time + frac * (self.current_lap_time - prev_time)
+            self.last_live_bin_index = idx
+
+        for b in range(0, (self.last_live_bin_index or 0) + 1):
+            cur_t = self.current_lap_bin_times[b]
+            ref_t = self.reference_bin_times[b] if b < len(self.reference_bin_times) else None
+            if cur_t is None or ref_t is None:
+                continue
+            self.current_segment_deltas[b] = cur_t - ref_t
+
+    def _sync_shared_performance_state(self):
+        shared_state['reference_bins'] = self.reference_bin_times
+        shared_state['current_lap_bins'] = self.current_lap_bin_times
+        shared_state['segment_deltas'] = self.current_segment_deltas
+        shared_state['last_lap_segment_deltas'] = self.last_lap_segment_deltas
+        shared_state['heatmap_points'] = self.reference_heatmap_points
+        shared_state['bin_meta'] = {
+            'count': HEATMAP_BIN_COUNT,
+            'track_length': float(self.track_analyzer.track_length) if self.track_analyzer else 0.0,
+        }
+        shared_state['corner_metrics'] = self.last_lap_corner_metrics
+        shared_state['corner_mastery'] = self.corner_mastery
+        shared_state['consistency'] = self.consistency_metrics
+        shared_state['driver_profile'] = self.driver_profile
+        shared_state['skill_scores'] = self.skill_scores
+        shared_state['optimal_lap'] = self.optimal_lap
+        shared_state['time_loss_summary'] = self.last_time_loss_summary
+        summary = None
+        if self.last_report_data:
+            summary = {
+                'laps_analyzed': self.last_report_data.get('laps_analyzed'),
+                'best_skill_area': self.last_report_data.get('best_skill_area'),
+                'top_focus': self.last_report_data.get('practice_focuses', [])[:1],
+                'generated_at': self.last_report_data.get('generated_at'),
+            }
+        shared_state['session_report_summary'] = summary
+
+    def _infer_corner_reason(self, metric, reference_metric):
+        if not reference_metric:
+            return ('none', 'No reference')
+
+        delta = metric.get('delta_vs_ref')
+        brake_diff = None
+        if metric.get('brake_point') is not None and reference_metric.get('brake_point') is not None:
+            brake_diff = metric['brake_point'] - reference_metric['brake_point']
+        exit_diff = None
+        if metric.get('exit_speed') is not None and reference_metric.get('exit_speed') is not None:
+            exit_diff = metric['exit_speed'] - reference_metric['exit_speed']
+        apex_diff = None
+        if metric.get('apex_speed') is not None and reference_metric.get('apex_speed') is not None:
+            apex_diff = metric['apex_speed'] - reference_metric['apex_speed']
+        entry_diff = None
+        if metric.get('entry_speed') is not None and reference_metric.get('entry_speed') is not None:
+            entry_diff = metric['entry_speed'] - reference_metric['entry_speed']
+
+        if brake_diff is not None and brake_diff > BRAKE_POINT_DIFF_M and (delta is None or delta > 0.0):
+            return ('brake_earlier', 'Brake earlier')
+        if exit_diff is not None and exit_diff < -EXIT_SPEED_DIFF_KPH:
+            return ('focus_exit', 'Exit speed low')
+        if apex_diff is not None and apex_diff < -APEX_SPEED_DIFF_KPH and (entry_diff is not None and entry_diff > -2.0):
+            return ('overslow_apex', 'Over-slowed apex')
+        if entry_diff is not None and entry_diff < -ENTRY_SPEED_DIFF_KPH:
+            return ('entry_speed', 'Carry more entry speed')
+        if metric.get('throttle_point') is not None and reference_metric.get('throttle_point') is not None:
+            throttle_diff = metric['throttle_point'] - reference_metric['throttle_point']
+            if throttle_diff > THROTTLE_POINT_DIFF_M:
+                return ('throttle_late', 'Throttle too late')
+
+        return ('clean', 'Clean corner')
+
+    def _build_corner_callout(self, turn, live_corner, zone):
+        if turn not in self.reference_corner_metrics:
+            return None
+
+        ref = self.reference_corner_metrics[turn]
+        profile_tags = set(self.driver_profile.get('tags', []))
+        delta = None
+        if self.reference is not None:
+            zone_end = min(float(zone['exit_dist']), float(self.track_analyzer.track_length))
+            ref_start = self._time_at_distance(self.reference, zone['start_dist'])
+            ref_end = self._time_at_distance(self.reference, zone_end)
+            cur_start = live_corner.get('entry_time')
+            cur_end = live_corner.get('exit_time')
+            if ref_start is not None and ref_end is not None and cur_start is not None and cur_end is not None:
+                delta = (cur_end - cur_start) - (ref_end - ref_start)
+
+        brake_diff = None
+        if live_corner.get('brake_dist') is not None and ref.get('brake_point') is not None:
+            brake_diff = live_corner['brake_dist'] - ref['brake_point']
+        entry_diff = None
+        if live_corner.get('entry_speed') is not None and ref.get('entry_speed') is not None:
+            entry_diff = live_corner['entry_speed'] - ref['entry_speed']
+        apex_diff = None
+        if live_corner.get('min_speed') is not None and ref.get('apex_speed') is not None:
+            apex_diff = live_corner['min_speed'] - ref['apex_speed']
+        exit_diff = None
+        if live_corner.get('exit_speed') is not None and ref.get('exit_speed') is not None:
+            exit_diff = live_corner['exit_speed'] - ref['exit_speed']
+
+        if brake_diff is not None and brake_diff > BRAKE_POINT_DIFF_M and (delta is None or delta > 0.0):
+            return say('corner_brake_earlier', turn=turn)
+        if exit_diff is not None and exit_diff < -EXIT_SPEED_DIFF_KPH:
+            return say('corner_focus_exit', turn=turn)
+        if 'Aggressive Braker' in profile_tags and apex_diff is not None and apex_diff < -2.0:
+            return say('corner_overslow_apex', turn=turn)
+        if 'Cautious Braker' in profile_tags and entry_diff is not None and entry_diff < -3.0:
+            return say('corner_entry_speed', turn=turn)
+        if apex_diff is not None and apex_diff < -APEX_SPEED_DIFF_KPH and (entry_diff is not None and entry_diff > -2.0):
+            return say('corner_overslow_apex', turn=turn)
+        if entry_diff is not None and entry_diff < -ENTRY_SPEED_DIFF_KPH:
+            return say('corner_entry_speed', turn=turn)
+        if delta is not None and delta < -0.05:
+            return say('corner_good', turn=turn)
+        return None
+
+    def _compute_corner_metrics_for_lap(self, lap_df, with_delta=True):
+        if self.track_analyzer is None or lap_df is None or len(lap_df) == 0:
+            return []
+
+        work = lap_df.sort_values('lap_distance').reset_index(drop=True)
+        if len(work) == 0:
+            return []
+
+        track_length = float(self.track_analyzer.track_length or work['lap_distance'].max())
+        metrics = []
+
+        for zone in self.track_analyzer.corners:
+            turn = int(zone['turn_number'])
+            start_d = max(0.0, float(zone['start_dist']) - 5.0)
+            end_d = min(track_length, float(zone['exit_dist']))
+            if end_d <= start_d:
+                continue
+
+            seg = work[(work['lap_distance'] >= start_d) & (work['lap_distance'] <= end_d)]
+            if len(seg) < 3:
+                continue
+
+            entry_speed = self._value_at_distance(work, start_d, 'speed')
+            exit_speed = self._value_at_distance(work, end_d, 'speed')
+
+            apex_row = seg.loc[seg['speed'].idxmin()]
+            apex_speed = float(apex_row['speed'])
+            apex_dist = float(apex_row['lap_distance'])
+
+            brake_search = work[(work['lap_distance'] >= max(0.0, start_d - 80.0)) & (work['lap_distance'] <= end_d)]
+            brake_point = None
+            braking_rows = brake_search[brake_search['brake'] > 0.25]
+            if len(braking_rows) > 0:
+                brake_point = float(braking_rows['lap_distance'].iloc[0])
+
+            throttle_point = None
+            throttle_search = work[(work['lap_distance'] >= apex_dist) & (work['lap_distance'] <= min(track_length, end_d + 60.0))]
+            throttle_rows = throttle_search[(throttle_search['throttle'] > 0.55) & (throttle_search['brake'] < 0.2)]
+            if len(throttle_rows) > 0:
+                throttle_point = float(throttle_rows['lap_distance'].iloc[0])
+
+            start_time = self._time_at_distance(work, start_d)
+            end_time = self._time_at_distance(work, end_d)
+            corner_time = None
+            if start_time is not None and end_time is not None and end_time >= start_time:
+                corner_time = end_time - start_time
+
+            delta_vs_ref = None
+            if with_delta and self.reference is not None:
+                ref_start = self._time_at_distance(self.reference, start_d)
+                ref_end = self._time_at_distance(self.reference, end_d)
+                if ref_start is not None and ref_end is not None and start_time is not None and end_time is not None:
+                    delta_vs_ref = (end_time - start_time) - (ref_end - ref_start)
+
+            metric = {
+                'turn': turn,
+                'start_distance': start_d,
+                'apex_distance': apex_dist,
+                'end_distance': end_d,
+                'entry_speed': float(entry_speed) if entry_speed is not None else None,
+                'apex_speed': apex_speed,
+                'exit_speed': float(exit_speed) if exit_speed is not None else None,
+                'brake_point': brake_point,
+                'throttle_point': throttle_point,
+                'corner_time': float(corner_time) if corner_time is not None else None,
+                'delta_vs_ref': float(delta_vs_ref) if delta_vs_ref is not None else None,
+                'reason': 'none',
+                'reason_label': 'No reference',
+            }
+
+            ref_metric = self.reference_corner_metrics.get(turn)
+            reason_key, reason_label = self._infer_corner_reason(metric, ref_metric)
+            metric['reason'] = reason_key
+            metric['reason_label'] = reason_label
+            metrics.append(metric)
+
+        return metrics
+
+    def _update_corner_mastery(self, corner_metrics):
+        for metric in corner_metrics:
+            turn = metric['turn']
+            history = self.corner_history.setdefault(turn, {
+                'entry': [],
+                'apex': [],
+                'exit': [],
+                'delta': [],
+                'brake': [],
+            })
+
+            history['entry'].append(metric.get('entry_speed'))
+            history['apex'].append(metric.get('apex_speed'))
+            history['exit'].append(metric.get('exit_speed'))
+            history['delta'].append(metric.get('delta_vs_ref'))
+            history['brake'].append(metric.get('brake_point'))
+
+            for key in history:
+                if len(history[key]) > CORNER_HISTORY_WINDOW:
+                    history[key] = history[key][-CORNER_HISTORY_WINDOW:]
+
+        mastery = []
+        for turn, hist in sorted(self.corner_history.items()):
+            deltas = [d for d in hist['delta'] if d is not None]
+            if not deltas:
+                continue
+
+            mean_delta = float(sum(deltas) / len(deltas))
+            sigma = self._stddev(deltas[-CONSISTENCY_WINDOW_LAPS:])
+
+            pace_score = self._clamp(100.0 - max(0.0, mean_delta) * 260.0, 0.0, 100.0)
+            consistency_score = self._clamp(100.0 - sigma * 420.0, 0.0, 100.0)
+            score = 0.65 * pace_score + 0.35 * consistency_score
+
+            trend = 0.0
+            if len(deltas) >= 6:
+                prev = sum(deltas[-6:-3]) / 3.0
+                recent = sum(deltas[-3:]) / 3.0
+                trend = prev - recent
+
+            mastery.append({
+                'turn': int(turn),
+                'score': round(score, 1),
+                'avg_delta': round(mean_delta, 4),
+                'consistency_sigma': round(sigma, 4),
+                'trend': round(trend, 4),
+            })
+
+        self.corner_mastery = mastery
+
+    def _update_consistency_metrics(self):
+        recent_laps = self.valid_lap_times[-CONSISTENCY_WINDOW_LAPS:]
+        lap_sigma = self._stddev(recent_laps)
+
+        s1_sigma = self._stddev(self.sector_history[1][-CONSISTENCY_WINDOW_LAPS:])
+        s2_sigma = self._stddev(self.sector_history[2][-CONSISTENCY_WINDOW_LAPS:])
+        s3_sigma = self._stddev(self.sector_history[3][-CONSISTENCY_WINDOW_LAPS:])
+
+        corner_sigmas = []
+        brake_sigmas = []
+        for turn, hist in self.corner_history.items():
+            dvals = [d for d in hist['delta'] if d is not None][-CONSISTENCY_WINDOW_LAPS:]
+            if dvals:
+                corner_sigmas.append({'turn': turn, 'sigma': self._stddev(dvals)})
+            bvals = [b for b in hist['brake'] if b is not None][-CONSISTENCY_WINDOW_LAPS:]
+            if len(bvals) >= 2:
+                brake_sigmas.append(self._stddev(bvals))
+
+        most_inconsistent = max(corner_sigmas, key=lambda c: c['sigma']) if corner_sigmas else None
+        most_consistent = min(corner_sigmas, key=lambda c: c['sigma']) if corner_sigmas else None
+        braking_sigma = (sum(brake_sigmas) / len(brake_sigmas)) if brake_sigmas else None
+
+        self.consistency_metrics = {
+            'lap_sigma': round(lap_sigma, 4) if lap_sigma else 0.0,
+            'sector_sigma': {
+                's1': round(s1_sigma, 4) if s1_sigma else 0.0,
+                's2': round(s2_sigma, 4) if s2_sigma else 0.0,
+                's3': round(s3_sigma, 4) if s3_sigma else 0.0,
+            },
+            'most_inconsistent_corner': {
+                'turn': int(most_inconsistent['turn']),
+                'sigma': round(most_inconsistent['sigma'], 4),
+            } if most_inconsistent else None,
+            'most_consistent_corner': {
+                'turn': int(most_consistent['turn']),
+                'sigma': round(most_consistent['sigma'], 4),
+            } if most_consistent else None,
+            'braking_point_sigma': round(braking_sigma, 4) if braking_sigma is not None else None,
+        }
+
+    def _update_driver_profile(self, lap_df, corner_metrics):
+        work = lap_df.sort_values('current_lap_time')
+        if len(work) < 5:
+            return
+
+        peak_brake = float(work['brake'].max())
+        throttle_vals = work['throttle'].tolist()
+        brake_vals = work['brake'].tolist()
+        times = work['current_lap_time'].tolist()
+        steer_vals = work['steer'].tolist() if 'steer' in work.columns else []
+
+        brake_slopes = []
+        throttle_changes = []
+        steer_rates = []
+        for i in range(1, len(work)):
+            dt = max(0.001, float(times[i] - times[i - 1]))
+            brake_slopes.append((float(brake_vals[i]) - float(brake_vals[i - 1])) / dt)
+            throttle_changes.append(float(throttle_vals[i]) - float(throttle_vals[i - 1]))
+            if steer_vals:
+                steer_rates.append(abs(float(steer_vals[i]) - float(steer_vals[i - 1])) / dt)
+
+        brake_slope_peak = max(brake_slopes) if brake_slopes else 0.0
+        throttle_jerk = self._stddev(throttle_changes)
+        steer_rate = self._stddev(steer_rates) if steer_rates else 0.0
+
+        brake_diffs = []
+        for metric in corner_metrics:
+            ref = self.reference_corner_metrics.get(metric['turn'])
+            if not ref:
+                continue
+            if metric.get('brake_point') is None or ref.get('brake_point') is None:
+                continue
+            brake_diffs.append(metric['brake_point'] - ref['brake_point'])
+        brake_point_diff = (sum(brake_diffs) / len(brake_diffs)) if brake_diffs else 0.0
+
+        history = getattr(self, 'profile_history', None)
+        if history is None:
+            self.profile_history = {
+                'peak_brake': [],
+                'brake_slope_peak': [],
+                'throttle_jerk': [],
+                'steer_rate': [],
+                'brake_point_diff': [],
+            }
+            history = self.profile_history
+
+        history['peak_brake'].append(peak_brake)
+        history['brake_slope_peak'].append(brake_slope_peak)
+        history['throttle_jerk'].append(throttle_jerk)
+        history['steer_rate'].append(steer_rate)
+        history['brake_point_diff'].append(brake_point_diff)
+        for key in history:
+            if len(history[key]) > CORNER_HISTORY_WINDOW:
+                history[key] = history[key][-CORNER_HISTORY_WINDOW:]
+
+        avg_peak = sum(history['peak_brake']) / len(history['peak_brake'])
+        avg_slope = sum(history['brake_slope_peak']) / len(history['brake_slope_peak'])
+        avg_jerk = sum(history['throttle_jerk']) / len(history['throttle_jerk'])
+        avg_turn_in = sum(history['steer_rate']) / len(history['steer_rate']) if history['steer_rate'] else 0.0
+        avg_brake_diff = sum(history['brake_point_diff']) / len(history['brake_point_diff'])
+
+        tags = []
+        if avg_peak > 0.90 and avg_slope > 2.5:
+            tags.append('Aggressive Braker')
+        if avg_brake_diff < -8.0:
+            tags.append('Cautious Braker')
+        elif avg_brake_diff > 8.0:
+            tags.append('Late Braker')
+        if avg_jerk < 0.045:
+            tags.append('Smooth Throttle')
+        elif avg_jerk > 0.10:
+            tags.append('Abrupt Throttle')
+        if avg_turn_in > 2.2:
+            tags.append('Sharp Turn-In')
+
+        self.driver_profile = {
+            'tags': tags,
+            'stats': {
+                'braking_aggressiveness': round(avg_peak * 100.0, 2),
+                'brake_slope_peak': round(avg_slope, 3),
+                'throttle_jerk': round(avg_jerk, 4),
+                'turn_in_rate': round(avg_turn_in, 4),
+                'brake_point_bias_m': round(avg_brake_diff, 3),
+            },
+        }
+
+    def _update_skill_scores(self, corner_metrics):
+        brake_diffs = []
+        exit_losses = []
+        throttle_delays = []
+        apex_losses = []
+
+        for metric in corner_metrics:
+            ref = self.reference_corner_metrics.get(metric['turn'])
+            if not ref:
+                continue
+
+            if metric.get('brake_point') is not None and ref.get('brake_point') is not None:
+                brake_diffs.append(metric['brake_point'] - ref['brake_point'])
+            if metric.get('exit_speed') is not None and ref.get('exit_speed') is not None:
+                exit_losses.append(max(0.0, ref['exit_speed'] - metric['exit_speed']))
+            if metric.get('throttle_point') is not None and ref.get('throttle_point') is not None:
+                throttle_delays.append(max(0.0, metric['throttle_point'] - ref['throttle_point']))
+            if metric.get('apex_speed') is not None and ref.get('apex_speed') is not None:
+                apex_losses.append(max(0.0, ref['apex_speed'] - metric['apex_speed']))
+
+        brake_abs_mean = sum(abs(v) for v in brake_diffs) / len(brake_diffs) if brake_diffs else 18.0
+        brake_sigma = self._stddev(brake_diffs)
+        braking_precision = self._clamp(100.0 - brake_abs_mean * 2.3 - brake_sigma * 1.4, 0.0, 100.0)
+
+        throttle_jerk = self.driver_profile.get('stats', {}).get('throttle_jerk', 0.08)
+        throttle_smoothness = self._clamp(100.0 - throttle_jerk * 650.0, 0.0, 100.0)
+
+        exit_loss = (sum(exit_losses) / len(exit_losses)) if exit_losses else 10.0
+        throttle_delay = (sum(throttle_delays) / len(throttle_delays)) if throttle_delays else 20.0
+        corner_exit_quality = self._clamp(100.0 - exit_loss * 3.2 - throttle_delay * 1.2, 0.0, 100.0)
+
+        lap_sigma = self.consistency_metrics.get('lap_sigma') or 0.0
+        corner_sigma_vals = [c['consistency_sigma'] for c in self.corner_mastery] if self.corner_mastery else []
+        mean_corner_sigma = (sum(corner_sigma_vals) / len(corner_sigma_vals)) if corner_sigma_vals else 0.0
+        consistency_score = self._clamp(100.0 - lap_sigma * 140.0 - mean_corner_sigma * 180.0, 0.0, 100.0)
+
+        apex_loss = (sum(apex_losses) / len(apex_losses)) if apex_losses else 8.0
+        steer_rate = self.driver_profile.get('stats', {}).get('turn_in_rate', 1.0)
+        line_adherence = self._clamp(100.0 - apex_loss * 2.5 - steer_rate * 6.0, 0.0, 100.0)
+
+        self.skill_scores = {
+            'Braking Precision': round(braking_precision, 1),
+            'Throttle Smoothness': round(throttle_smoothness, 1),
+            'Corner Exit Quality': round(corner_exit_quality, 1),
+            'Consistency': round(consistency_score, 1),
+            'Line Adherence': round(line_adherence, 1),
+        }
+
+    def _update_optimal_lap(self, lap_bin_times):
+        sectors_best = None
+        if all(self.best_sector_times.get(i) is not None for i in (1, 2, 3)):
+            sectors_best = sum(self.best_sector_times[i] for i in (1, 2, 3))
+
+        if lap_bin_times:
+            lap_segments = self._cumulative_to_segment_times(lap_bin_times)
+            if lap_segments:
+                for i in range(1, min(len(lap_segments), len(self.best_bin_segment_times))):
+                    seg = lap_segments[i]
+                    if seg is None or seg <= 0:
+                        continue
+                    best = self.best_bin_segment_times[i]
+                    if best is None or seg < best:
+                        self.best_bin_segment_times[i] = seg
+
+        bins_best = None
+        usable_segments = [s for s in self.best_bin_segment_times[1:] if s is not None]
+        if len(usable_segments) >= int(0.9 * (HEATMAP_BIN_COUNT - 1)):
+            bins_best = sum(usable_segments)
+
+        gain_sector = None
+        gain_bins = None
+        if self.reference_lap_time is not None:
+            if sectors_best is not None:
+                gain_sector = self.reference_lap_time - sectors_best
+            if bins_best is not None:
+                gain_bins = self.reference_lap_time - bins_best
+
+        self.optimal_lap = {
+            'sectors_best': round(sectors_best, 3) if sectors_best is not None else None,
+            'bins_best': round(bins_best, 3) if bins_best is not None else None,
+            'gain_vs_pb_sectors': round(gain_sector, 3) if gain_sector is not None else None,
+            'gain_vs_pb_bins': round(gain_bins, 3) if gain_bins is not None else None,
+        }
+
+    def _build_time_loss_summary(self, corner_metrics):
+        losses = [m for m in corner_metrics if m.get('delta_vs_ref') is not None and m['delta_vs_ref'] > 0.01]
+        losses.sort(key=lambda m: m['delta_vs_ref'], reverse=True)
+        summary = []
+        for metric in losses[:3]:
+            summary.append({
+                'turn': int(metric['turn']),
+                'delta': round(float(metric['delta_vs_ref']), 3),
+                'reason': metric.get('reason_label', 'Time loss'),
+            })
+        return summary
+
+    def _print_time_loss_summary(self, summary):
+        if not summary:
+            print("  Time-loss summary: clean lap, no major corner losses")
+            return
+        print("  Top Time Losses:")
+        for item in summary:
+            print(f"   - T{item['turn']}: +{item['delta']:.3f}s ({item['reason']})")
+
+    def _maybe_speak_time_loss_summary(self, lap_num, summary):
+        if not summary:
+            return
+        if lap_num == self._last_lap_summary_tts:
+            return
+        top = summary[0]
+        if top['delta'] < 0.12:
+            return
+        if not self._check_cooldown('lap_summary'):
+            return
+        delta_speech = self._format_delta_speech_simple(top['delta'])
+        self.speak(
+            say('lap_time_loss_summary', turn=top['turn'], delta=delta_speech),
+            priority=SmartTTSQueue.PRIORITY_MEDIUM,
+            valid_range=250,
+        )
+        self._set_cooldown('lap_summary')
+        self._last_lap_summary_tts = lap_num
+
+    def _generate_performance_report(self, final=False):
+        rows = [r for r in self.lap_performance_rows if r.get('corner_metrics')]
+        if not rows:
+            return None
+
+        corner_loss_acc = {}
+        for row in rows:
+            for metric in row['corner_metrics']:
+                d = metric.get('delta_vs_ref')
+                if d is None:
+                    continue
+                turn = metric['turn']
+                bucket = corner_loss_acc.setdefault(turn, [])
+                bucket.append(d)
+
+        avg_losses = []
+        for turn, vals in corner_loss_acc.items():
+            if not vals:
+                continue
+            avg = sum(vals) / len(vals)
+            if avg > 0:
+                avg_losses.append({'turn': turn, 'avg_delta': avg})
+        avg_losses.sort(key=lambda x: x['avg_delta'], reverse=True)
+
+        most_improved = None
+        improvement_rows = []
+        for turn, vals in corner_loss_acc.items():
+            if len(vals) < 4:
+                continue
+            half = len(vals) // 2
+            first = sum(vals[:half]) / max(1, half)
+            second = sum(vals[half:]) / max(1, len(vals) - half)
+            gain = first - second
+            improvement_rows.append({'turn': turn, 'gain': gain})
+        if improvement_rows:
+            most_improved = max(improvement_rows, key=lambda x: x['gain'])
+
+        best_skill = max(self.skill_scores.items(), key=lambda kv: kv[1])[0] if self.skill_scores else None
+
+        practice_focuses = []
+        if len(rows) < 3:
+            practice_focuses.append("Need 3 to 5 valid laps for reliable trend analysis")
+        for loss in avg_losses[:3]:
+            turn = loss['turn']
+            reason = None
+            for row in reversed(rows):
+                for metric in row['corner_metrics']:
+                    if metric['turn'] == turn and metric.get('reason_label'):
+                        reason = metric['reason_label']
+                        break
+                if reason:
+                    break
+            practice_focuses.append(f"Turn {turn}: {reason or 'reduce corner delta'}")
+        if best_skill:
+            practice_focuses.append(f"Keep leveraging your {best_skill.lower()}")
+
+        report = {
+            'generated_at': datetime.now().isoformat(timespec='seconds'),
+            'final': bool(final),
+            'laps_analyzed': len(rows),
+            'biggest_time_loss_corners': [
+                {'turn': int(x['turn']), 'avg_delta': round(float(x['avg_delta']), 4)}
+                for x in avg_losses[:5]
+            ],
+            'most_improved_corner': (
+                {'turn': int(most_improved['turn']), 'delta_gain': round(float(most_improved['gain']), 4)}
+                if most_improved else None
+            ),
+            'best_skill_area': best_skill,
+            'practice_focuses': practice_focuses[:3],
+            'driver_profile_tags': self.driver_profile.get('tags', []),
+            'skill_scores': self.skill_scores,
+            'consistency': self.consistency_metrics,
+            'optimal_lap': self.optimal_lap,
+        }
+
+        self.last_report_data = report
+
+        if self.enable_logging and self.session_info and self.session_info.get('path'):
+            base = self.session_info['path']
+            json_path = os.path.join(base, 'performance_report.json')
+            md_path = os.path.join(base, 'performance_report.md')
+            try:
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(report, f, indent=2)
+                with open(md_path, 'w', encoding='utf-8') as f:
+                    f.write("# Session Performance Report\n\n")
+                    f.write(f"- Generated: {report['generated_at']}\n")
+                    f.write(f"- Laps analyzed: {report['laps_analyzed']}\n")
+                    if report['best_skill_area']:
+                        f.write(f"- Best skill area: {report['best_skill_area']}\n")
+                    if report['most_improved_corner']:
+                        f.write(
+                            f"- Most improved corner: Turn {report['most_improved_corner']['turn']} "
+                            f"({report['most_improved_corner']['delta_gain']:+.3f}s)\n"
+                        )
+                    f.write("\n## Biggest Time Loss Corners\n")
+                    for item in report['biggest_time_loss_corners'][:3]:
+                        f.write(f"- Turn {item['turn']}: +{item['avg_delta']:.3f}s avg\n")
+                    f.write("\n## Practice Focuses\n")
+                    for item in report['practice_focuses']:
+                        f.write(f"- {item}\n")
+            except Exception as exc:
+                print(f"  [Report save warning: {exc}]")
+
+        shared_state['session_report_summary'] = {
+            'laps_analyzed': report.get('laps_analyzed'),
+            'best_skill_area': report.get('best_skill_area'),
+            'top_focus': report.get('practice_focuses', [])[:1],
+            'generated_at': report.get('generated_at'),
+        }
+
+        return report
+
+    def _build_post_session_summary_speech(self, report):
+        """Build short engineer-style spoken debrief from report data."""
+        if not report:
+            return None
+
+        laps = int(report.get('laps_analyzed') or 0)
+        if laps <= 1:
+            return "Session summary. Only one timed lap. Run at least three for a reliable debrief."
+
+        sentences = []
+
+        losses = report.get('biggest_time_loss_corners') or []
+        if losses:
+            bands = []
+            for item in losses[:3]:
+                turn = item.get('turn')
+                ref_metric = self.reference_corner_metrics.get(turn) if turn is not None else None
+                apex_speed = ref_metric.get('apex_speed') if ref_metric else None
+                if apex_speed is None:
+                    continue
+                if apex_speed < 120:
+                    bands.append('low-speed')
+                elif apex_speed < 190:
+                    bands.append('medium-speed')
+                else:
+                    bands.append('high-speed')
+
+            if bands:
+                counts = {}
+                for band in bands:
+                    counts[band] = counts.get(band, 0) + 1
+                top_band = max(counts.items(), key=lambda x: x[1])[0]
+                sentences.append(f"You lost most time in {top_band} corners.")
+            else:
+                top_turn = losses[0].get('turn')
+                sentences.append(f"Most time was lost around turn {top_turn}.")
+        else:
+            sentences.append("No single corner dominated your time loss.")
+
+        improved = report.get('most_improved_corner')
+        if improved and improved.get('delta_gain') is not None and improved['delta_gain'] > 0.04:
+            sentences.append(f"Brake stability improved in turn {improved['turn']}.")
+
+        focuses = report.get('practice_focuses') or []
+        if focuses:
+            focus_text = str(focuses[0]).replace(':', ',')
+            sentences.append(f"Biggest gain opportunity: {focus_text.lower()}.")
+        elif report.get('best_skill_area'):
+            skill = str(report['best_skill_area']).lower()
+            sentences.append(f"Best skill area today was {skill}.")
+
+        return " ".join(sentences[:3])
 
     def _check_lap_validity(self, is_invalid):
         if is_invalid and not self.lap_was_invalid:
@@ -950,6 +1951,10 @@ class F1Coach:
                 'valid': False,
                 'is_pb': False,
             })
+            self.last_lap_corner_metrics = []
+            self.last_time_loss_summary = []
+            self.last_lap_segment_deltas = []
+            self._sync_shared_performance_state()
             self._emit_lap_update()
             print(f"\n  Lap {lap_num} INVALID - not using as reference\n")
             self.lap_was_invalid = False
@@ -987,6 +1992,19 @@ class F1Coach:
             if self.enable_logging and self.session_info:
                 self.reference.to_csv(self.session_info['reference_path'], index=False)
 
+            # Build bin reference (cumulative times at fixed distance bins)
+            ref_bins, ref_points = self._build_bin_profile(self.reference)
+            if ref_bins:
+                self.reference_bin_times = ref_bins
+                if not self.best_bin_segment_times or len(self.best_bin_segment_times) != HEATMAP_BIN_COUNT:
+                    self.best_bin_segment_times = [None] * HEATMAP_BIN_COUNT
+            if ref_points:
+                self.reference_heatmap_points = ref_points
+
+            # Build reference corner metrics used for per-corner comparisons
+            reference_corner_list = self._compute_corner_metrics_for_lap(self.reference, with_delta=False)
+            self.reference_corner_metrics = {m['turn']: m for m in reference_corner_list}
+
             print(f"\n{'='*70}")
             print(f"  FASTEST LAP! Lap {lap_num} - {mins}:{secs:06.3f}")
             print(f"{'='*70}\n")
@@ -1008,6 +2026,75 @@ class F1Coach:
             else:
                 self.speak(say('lap_slow', time=time_speech, delta=delta_speech), force=True, priority=SmartTTSQueue.PRIORITY_HIGH)
 
+        # Build lap-level TT metrics
+        if self.pending_sector1_time > 0:
+            self.sector_history[1].append(self.pending_sector1_time)
+            if len(self.sector_history[1]) > 50:
+                self.sector_history[1] = self.sector_history[1][-50:]
+        if self.pending_sector2_time > 0:
+            self.sector_history[2].append(self.pending_sector2_time)
+            if len(self.sector_history[2]) > 50:
+                self.sector_history[2] = self.sector_history[2][-50:]
+        if self.pending_sector1_time > 0 and self.pending_sector2_time > 0:
+            s3_time_for_stats = lap_time - self.pending_sector1_time - self.pending_sector2_time
+            if s3_time_for_stats > 0:
+                self.sector_history[3].append(s3_time_for_stats)
+                if len(self.sector_history[3]) > 50:
+                    self.sector_history[3] = self.sector_history[3][-50:]
+
+        self.valid_lap_times.append(lap_time)
+        if len(self.valid_lap_times) > 100:
+            self.valid_lap_times = self.valid_lap_times[-100:]
+
+        # Compare this lap against reference at fixed distance bins
+        lap_bins, _ = self._build_bin_profile(lap_df)
+        if lap_bins and self.reference_bin_times:
+            lap_deltas = [None] * HEATMAP_BIN_COUNT
+            for i in range(min(len(lap_bins), len(self.reference_bin_times), HEATMAP_BIN_COUNT)):
+                if lap_bins[i] is None or self.reference_bin_times[i] is None:
+                    continue
+                lap_deltas[i] = lap_bins[i] - self.reference_bin_times[i]
+            self.last_lap_segment_deltas = lap_deltas
+        self._update_optimal_lap(lap_bins)
+
+        # Corner metrics + time loss finder
+        corner_metrics = self._compute_corner_metrics_for_lap(lap_df, with_delta=True)
+        for metric in corner_metrics:
+            if metric.get('delta_vs_ref') is not None:
+                metric['delta_vs_ref'] = round(metric['delta_vs_ref'], 4)
+            for key in ('entry_speed', 'apex_speed', 'exit_speed', 'corner_time'):
+                if metric.get(key) is not None:
+                    metric[key] = round(metric[key], 3)
+            for key in ('start_distance', 'apex_distance', 'end_distance', 'brake_point', 'throttle_point'):
+                if metric.get(key) is not None:
+                    metric[key] = round(metric[key], 2)
+        self.last_lap_corner_metrics = corner_metrics
+
+        time_loss_summary = self._build_time_loss_summary(corner_metrics)
+        self.last_time_loss_summary = time_loss_summary
+        self._print_time_loss_summary(time_loss_summary)
+        self._maybe_speak_time_loss_summary(lap_num, time_loss_summary)
+
+        # Session mastery + consistency + profile + skills
+        self._update_corner_mastery(corner_metrics)
+        self._update_consistency_metrics()
+        self._update_driver_profile(lap_df, corner_metrics)
+        self._update_skill_scores(corner_metrics)
+        self._sync_shared_performance_state()
+
+        self.lap_performance_rows.append({
+            'lap_num': lap_num,
+            'lap_time': lap_time,
+            'is_pb': is_pb,
+            'time_loss_summary': time_loss_summary,
+            'corner_metrics': corner_metrics,
+        })
+        if len(self.lap_performance_rows) > 100:
+            self.lap_performance_rows = self.lap_performance_rows[-100:]
+
+        if lap_num % REPORT_INTERVAL_LAPS == 0:
+            self._generate_performance_report(final=False)
+
         # Update shared state for web interface
         shared_state['lap_times'].append({
             'lap_num': lap_num,
@@ -1026,6 +2113,15 @@ class F1Coach:
                     'laps': shared_state['lap_times'],
                     'fastest_lap': shared_state['fastest_lap'],
                     'sector_colors': shared_state['sector_colors'],
+                    'time_loss_summary': shared_state['time_loss_summary'],
+                    'corner_mastery': shared_state['corner_mastery'],
+                    'consistency': shared_state['consistency'],
+                    'driver_profile': shared_state['driver_profile'],
+                    'skill_scores': shared_state['skill_scores'],
+                    'optimal_lap': shared_state['optimal_lap'],
+                    'segment_deltas': shared_state['segment_deltas'],
+                    'last_lap_segment_deltas': shared_state['last_lap_segment_deltas'],
+                    'heatmap_points': shared_state['heatmap_points'],
                 }, namespace='/')
             except Exception:
                 pass
@@ -1052,9 +2148,6 @@ class F1Coach:
         # NOTE: _check_delta() removed - delta now announced per sector only
 
     def _check_braking_zones(self):
-        if not self._check_cooldown('brake'):
-            return
-
         next_zone = self.track_analyzer.get_next_braking_zone(self.current_lap_distance)
         if next_zone is None:
             return
@@ -1066,14 +2159,16 @@ class F1Coach:
         warning_dist = self.track_analyzer.calculate_braking_warning_distance(self.current_speed, next_zone)
         zone_id = f"{next_zone['start_dist']:.0f}"
 
-        if 80 < distance_to_zone < 120 and zone_id not in self.warned_braking_zones:
-            if self.current_speed > next_zone['min_speed'] + 60:
-                self.speak(say('brake_warning'), priority=SmartTTSQueue.PRIORITY_HIGH, valid_range=80)
+        if 90 < distance_to_zone < 115 and zone_id not in self.warned_braking_zones and self._check_cooldown('brake_warn'):
+            # Keep this to big stops only to reduce chatter.
+            speed_threshold = max(next_zone['min_speed'] + 75, 170)
+            if self.current_speed > speed_threshold:
+                self.speak(say('brake_warning'), priority=SmartTTSQueue.PRIORITY_MEDIUM, valid_range=70)
                 self.warned_braking_zones.add(zone_id)
-                self._set_cooldown('brake')
+                self._set_cooldown('brake_warn')
                 return
 
-        if 0 < distance_to_zone < warning_dist:
+        if 0 < distance_to_zone < warning_dist and self._check_cooldown('brake'):
             if self.current_throttle > 0.3 and self.current_brake < 0.2:
                 if next_zone['min_gear'] < self.current_gear - 1:
                     self.speak(say('brake_with_gear', gear=next_zone['min_gear']), priority=SmartTTSQueue.PRIORITY_CRITICAL, valid_range=60)
@@ -1112,105 +2207,81 @@ class F1Coach:
             self._set_cooldown('positive')
 
     def _check_corners(self):
-        """Corner-by-corner feedback after exiting each turn."""
+        """Corner-by-corner TT feedback with per-corner and per-lap callout caps."""
         if self.track_analyzer is None:
             return
-        if not self._check_cooldown('corner'):
+
+        dist = self.current_lap_distance
+        if self.current_lap_time <= 0:
             return
 
-        # Track current corner data as we drive through all detected corners.
         for zone in self.track_analyzer.corners:
-            turn = zone['turn_number']
-            dist = self.current_lap_distance
+            turn = int(zone['turn_number'])
+            corner_data = self.current_lap_corner_data.setdefault(turn, {
+                'started': False,
+                'completed': False,
+                'entry_speed': None,
+                'entry_time': None,
+                'brake_dist': None,
+                'min_speed': None,
+                'min_speed_dist': None,
+                'throttle_dist': None,
+                'exit_speed': None,
+                'exit_time': None,
+            })
 
-            # Initialize tracking for this corner
-            if turn not in self.corner_tracking_state:
-                self.corner_tracking_state[turn] = 'waiting'
+            start_d = float(zone['start_dist'])
+            end_d = min(float(zone['exit_dist']), float(self.track_analyzer.track_length))
 
-            if turn not in self.current_lap_corner_data:
-                self.current_lap_corner_data[turn] = {
-                    'brake_dist': None,
-                    'min_speed': None,
-                    'min_speed_dist': None,
-                    'throttle_dist': None,
-                }
+            if not corner_data['started'] and dist >= max(0.0, start_d - 5.0):
+                corner_data['started'] = True
+                corner_data['entry_speed'] = self.current_speed
+                corner_data['entry_time'] = self.current_lap_time
 
-            corner_data = self.current_lap_corner_data[turn]
+            if not corner_data['started'] or corner_data['completed']:
+                continue
 
-            # Detect brake point: first time brake > 0.2 near this corner
-            if (corner_data['brake_dist'] is None
-                    and zone['start_dist'] - 50 < dist < zone['end_dist']
-                    and self.current_brake > 0.2):
+            if (
+                corner_data['brake_dist'] is None
+                and dist >= max(0.0, start_d - 80.0)
+                and dist <= end_d
+                and self.current_brake > 0.25
+            ):
                 corner_data['brake_dist'] = dist
 
-            # Track min speed through corner
-            if zone['start_dist'] < dist < zone['exit_dist']:
+            if start_d <= dist <= end_d:
                 if corner_data['min_speed'] is None or self.current_speed < corner_data['min_speed']:
                     corner_data['min_speed'] = self.current_speed
                     corner_data['min_speed_dist'] = dist
 
-            # Detect throttle application after min speed
-            if (corner_data['min_speed_dist'] is not None
-                    and corner_data['throttle_dist'] is None
-                    and dist > corner_data['min_speed_dist']
-                    and self.current_throttle > 0.5):
+            if (
+                corner_data['min_speed_dist'] is not None
+                and corner_data['throttle_dist'] is None
+                and dist > corner_data['min_speed_dist']
+                and self.current_throttle > 0.55
+                and self.current_brake < 0.2
+            ):
                 corner_data['throttle_dist'] = dist
 
-        # Check if we just exited a corner
-        exited = self.track_analyzer.get_recently_exited_corner(
-            self.current_lap_distance,
-            ignore_turns=self.corner_feedback_given
-        )
-        if exited is None:
-            return
+            if dist > end_d:
+                corner_data['completed'] = True
+                corner_data['exit_speed'] = self.current_speed
+                corner_data['exit_time'] = self.current_lap_time
 
-        turn = exited['turn_number']
+                if turn in self.corner_feedback_given:
+                    continue
+                self.corner_feedback_given.add(turn)
 
-        corner_data = self.current_lap_corner_data.get(turn)
-        if corner_data is None:
-            return
+                if self.corner_callouts_this_lap >= self.max_corner_callouts_per_lap:
+                    continue
+                if not self._check_cooldown('corner'):
+                    continue
 
-        # Check time delta through this corner
-        ref_at_exit = self.track_analyzer.get_reference_at_distance(exited['exit_dist'])
-        if self.current_lap_time <= 0:
-            return
-
-        # Give feedback on EVERY corner (priority: brake > min speed > throttle)
-        # If nothing notable, say "Good turn N"
-        feedback = None
-
-        # 1. Brake point comparison
-        if corner_data['brake_dist'] is not None and exited['brake_start_dist'] is not None:
-            brake_diff = corner_data['brake_dist'] - exited['brake_start_dist']
-            if brake_diff < -10:
-                feedback = say('corner_brake_later', turn=turn)
-            elif brake_diff > 10:
-                feedback = say('corner_good_brake', turn=turn)
-
-        # 2. Min speed comparison
-        if feedback is None and corner_data['min_speed'] is not None:
-            speed_diff = corner_data['min_speed'] - exited['min_speed']
-            if speed_diff < -5:
-                feedback = say('corner_carry_speed', turn=turn)
-            elif speed_diff > 5:
-                feedback = say('corner_good_speed', turn=turn)
-
-        # 3. Throttle application comparison
-        if feedback is None and corner_data['throttle_dist'] is not None and exited['throttle_on_dist'] is not None:
-            throttle_diff = corner_data['throttle_dist'] - exited['throttle_on_dist']
-            if throttle_diff > 15:
-                feedback = say('corner_earlier_throttle', turn=turn)
-            elif throttle_diff < -15:
-                feedback = say('corner_good_exit', turn=turn)
-
-        # 4. Nothing notable - still give feedback
-        if feedback is None:
-            feedback = say('corner_good', turn=turn)
-
-        self.speak(feedback, priority=SmartTTSQueue.PRIORITY_MEDIUM, valid_range=150)
-        self._set_cooldown('corner')
-
-        self.corner_feedback_given.add(turn)
+                feedback = self._build_corner_callout(turn, corner_data, zone)
+                if feedback:
+                    self.speak(feedback, priority=SmartTTSQueue.PRIORITY_MEDIUM, valid_range=160)
+                    self.corner_callouts_this_lap += 1
+                    self._set_cooldown('corner')
 
     def _log_telemetry(self, row):
         if not self.enable_logging or not self.session_info:
@@ -1264,6 +2335,10 @@ class F1Coach:
             self.corner_feedback_given.clear()
             self.current_lap_corner_data.clear()
             self.corner_tracking_state.clear()
+            self.corner_callouts_this_lap = 0
+            self.current_lap_bin_times = [None] * HEATMAP_BIN_COUNT
+            self.current_segment_deltas = [None] * HEATMAP_BIN_COUNT
+            self.last_live_bin_index = None
             shared_state['sector_colors'] = {1: None, 2: None, 3: None}
 
             for cd in self.cooldowns.values():
@@ -1339,6 +2414,8 @@ class F1Coach:
             self._log_telemetry(row)
 
         self.analyze_and_coach()
+        self._update_live_bin_deltas()
+        self._sync_shared_performance_state()
 
         # Update shared state for web interface
         shared_state['current_speed'] = speed
@@ -1383,6 +2460,7 @@ def run_coaching_session(enable_logging=False):
     shared_state['coach'] = coach
     shared_state['session_active'] = True
     shared_state['current_mode'] = 2 if enable_logging else 1
+    _reset_analytics_shared_state()
 
     # Clear stale stop requests from prior sessions.
     while True:
@@ -1538,6 +2616,15 @@ def run_coaching_session(enable_logging=False):
         print(f"  Valid laps: {len(coach.completed_laps)}")
         print(f"  Fastest: Lap {coach.reference_lap_num} - {coach.reference_lap_time:.3f}s")
 
+    report = coach._generate_performance_report(final=True)
+    if report and coach.enable_logging and coach.session_info and coach.session_info.get('path'):
+        print(f"  Report: {os.path.join(coach.session_info['path'], 'performance_report.json')}")
+
+    post_summary = coach._build_post_session_summary_speech(report)
+    if post_summary:
+        coach.speak(post_summary, force=True, priority=SmartTTSQueue.PRIORITY_HIGH)
+        time.sleep(0.5)
+
     coach.speak(say('session_end'), force=True, priority=SmartTTSQueue.PRIORITY_HIGH)
     time.sleep(2)
     coach.shutdown()
@@ -1558,6 +2645,7 @@ def run_coaching_session(enable_logging=False):
     shared_state['fastest_lap'] = None
     shared_state['sector_colors'] = {1: None, 2: None, 3: None}
     shared_state['speech_log'] = []
+    _reset_analytics_shared_state()
 
 
 # =============================================================================

@@ -3,6 +3,7 @@ import os
 import socket
 import threading
 import time
+import json
 
 try:
     from flask import Flask, jsonify, send_from_directory
@@ -94,17 +95,8 @@ class WebServer:
         app = self.app
         sio = self.socketio
 
-        @app.route('/')
-        def index():
-            return send_from_directory(self.frontend_dir, 'index.html')
-
-        @app.route('/assets/<path:filename>')
-        def assets(filename):
-            return send_from_directory(self.frontend_dir, filename)
-
-        @app.route('/state')
-        def state():
-            return jsonify({
+        def build_state_payload():
+            return {
                 'active': shared_state['session_active'],
                 'track_outline': shared_state['track_outline'],
                 'laps': shared_state['lap_times'],
@@ -118,7 +110,33 @@ class WebServer:
                 'sector_colors': shared_state['sector_colors'],
                 'fastest_lap': shared_state['fastest_lap'],
                 'speech_log': shared_state['speech_log'][-20:],
-            })
+                'bin_meta': shared_state['bin_meta'],
+                'reference_bins': shared_state['reference_bins'],
+                'current_lap_bins': shared_state['current_lap_bins'],
+                'segment_deltas': shared_state['segment_deltas'],
+                'last_lap_segment_deltas': shared_state['last_lap_segment_deltas'],
+                'heatmap_points': shared_state['heatmap_points'],
+                'corner_metrics': shared_state['corner_metrics'],
+                'time_loss_summary': shared_state['time_loss_summary'],
+                'corner_mastery': shared_state['corner_mastery'],
+                'consistency': shared_state['consistency'],
+                'driver_profile': shared_state['driver_profile'],
+                'skill_scores': shared_state['skill_scores'],
+                'optimal_lap': shared_state['optimal_lap'],
+                'session_report_summary': shared_state['session_report_summary'],
+            }
+
+        @app.route('/')
+        def index():
+            return send_from_directory(self.frontend_dir, 'index.html')
+
+        @app.route('/assets/<path:filename>')
+        def assets(filename):
+            return send_from_directory(self.frontend_dir, filename)
+
+        @app.route('/state')
+        def state():
+            return jsonify(build_state_payload())
 
         @app.route('/start/<int:mode>', methods=['POST'])
         def start_mode(mode):
@@ -143,22 +161,44 @@ class WebServer:
             result = []
             for s in sessions[-10:]:
                 info = mgr.get_session_info(s['path'])
+                report_path = os.path.join(s['path'], 'performance_report.json')
+                report_summary = None
+                if os.path.exists(report_path):
+                    try:
+                        with open(report_path, 'r', encoding='utf-8') as f:
+                            report = json.load(f)
+                        report_summary = {
+                            'laps_analyzed': report.get('laps_analyzed'),
+                            'best_skill_area': report.get('best_skill_area'),
+                            'generated_at': report.get('generated_at'),
+                        }
+                    except Exception:
+                        report_summary = None
                 result.append({
                     'folder': s['folder'],
                     'path': s['path'],
                     'num_laps': info['num_laps'] if info else 0,
+                    'report_available': os.path.exists(report_path),
+                    'report_summary': report_summary,
                 })
             return jsonify(result)
 
+        @app.route('/session/<session_id>/report')
+        def session_report(session_id):
+            safe_session_id = os.path.basename(session_id)
+            report_path = os.path.join(SessionManager().base_dir, safe_session_id, 'performance_report.json')
+            if not os.path.exists(report_path):
+                return jsonify({'ok': False, 'error': 'Report not found'}), 404
+            try:
+                with open(report_path, 'r', encoding='utf-8') as f:
+                    report = json.load(f)
+                return jsonify({'ok': True, 'report': report})
+            except Exception as exc:
+                return jsonify({'ok': False, 'error': str(exc)}), 500
+
         @sio.on('connect')
         def handle_connect():
-            emit('session_state', {
-                'active': shared_state['session_active'],
-                'track_outline': shared_state['track_outline'],
-                'laps': shared_state['lap_times'],
-                'sector_colors': shared_state['sector_colors'],
-                'fastest_lap': shared_state['fastest_lap'],
-            })
+            emit('session_state', build_state_payload())
 
         self.emitter_running = True
         self.emitter_thread = threading.Thread(target=self._telemetry_emitter, daemon=True)
