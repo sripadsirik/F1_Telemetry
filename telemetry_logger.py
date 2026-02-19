@@ -117,8 +117,8 @@ try:
                         lap_data = {
                             'last_lap_time': lap[0] / 1000.0,
                             'current_lap_time': lap[1] / 1000.0,
-                            'sector1_time': lap[2] / 1000.0,
-                            'sector2_time': lap[4] / 1000.0,
+                            'sector1_time': (lap[3] * 60.0) + (lap[2] / 1000.0),
+                            'sector2_time': (lap[5] * 60.0) + (lap[4] / 1000.0),
                             'lap_distance': lap_distance,
                             'current_lap_num': display_lap,
                             'raw_current_lap_num': raw_lap_num,

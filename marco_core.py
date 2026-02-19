@@ -895,12 +895,10 @@ class F1Coach:
             self._announce_sector(1, sector1_time)
             self.sector_announced[1] = True
 
-        if self.sector_announced[1] and not self.sector_announced[2] and sector2_time > self.pending_sector1_time:
+        if self.sector_announced[1] and not self.sector_announced[2] and sector2_time > 0:
             self.pending_sector2_time = sector2_time
-            s2_time = sector2_time - self.pending_sector1_time
-            if s2_time > 0:
-                self._announce_sector(2, s2_time)
-                self.sector_announced[2] = True
+            self._announce_sector(2, sector2_time)
+            self.sector_announced[2] = True
 
     def _finish_lap(self, lap_num, lap_time):
         if not self.current_lap_data or lap_time <= 0:
@@ -918,8 +916,8 @@ class F1Coach:
         )
 
         # S3: just update best/reference tracking silently (lap time callout handles it)
-        if self.pending_sector2_time > 0:
-            s3_time = lap_time - self.pending_sector2_time
+        if self.pending_sector1_time > 0 and self.pending_sector2_time > 0:
+            s3_time = lap_time - self.pending_sector1_time - self.pending_sector2_time
             if s3_time > 0:
                 best = self.best_sector_times[3]
                 ref = self.reference_sector_times[3]
@@ -973,10 +971,12 @@ class F1Coach:
             # Update reference sector times from this lap
             if self.pending_sector1_time > 0:
                 self.reference_sector_times[1] = self.pending_sector1_time
-            if self.pending_sector2_time > 0 and self.pending_sector1_time > 0:
-                self.reference_sector_times[2] = self.pending_sector2_time - self.pending_sector1_time
             if self.pending_sector2_time > 0:
-                self.reference_sector_times[3] = lap_time - self.pending_sector2_time
+                self.reference_sector_times[2] = self.pending_sector2_time
+            if self.pending_sector1_time > 0 and self.pending_sector2_time > 0:
+                s3_ref = lap_time - self.pending_sector1_time - self.pending_sector2_time
+                if s3_ref > 0:
+                    self.reference_sector_times[3] = s3_ref
 
             # Update track outline for web interface from reference lap
             if 'pos_x' in lap_df.columns and 'pos_z' in lap_df.columns:
@@ -1460,8 +1460,8 @@ def run_coaching_session(enable_logging=False):
                                 'current_lap_num': current_lap_num,
                                 'current_lap_time': lap[1] / 1000.0,
                                 'last_lap_time': lap[0] / 1000.0,
-                                'sector1_time': lap[2] / 1000.0,
-                                'sector2_time': lap[4] / 1000.0,
+                                'sector1_time': (lap[3] * 60.0) + (lap[2] / 1000.0),
+                                'sector2_time': (lap[5] * 60.0) + (lap[4] / 1000.0),
                                 'sector': lap[17],
                                 'lap_invalid': lap_invalid,
                                 'total_warnings': total_warnings,
