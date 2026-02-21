@@ -1,0 +1,312 @@
+.screen {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* ── top bar ── */
+.topBar {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.backBtn {
+  background: none;
+  color: var(--accent);
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.topCenter {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sessionNum {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.sessionDate {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pbChip {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(179, 136, 255, 0.12);
+  color: var(--purple);
+  border: 1px solid rgba(179, 136, 255, 0.25);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── scrollable content ── */
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.loadingMsg {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* ── map + lap list row ── */
+.mapSection {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 12px;
+  min-height: 280px;
+}
+
+@media (max-width: 600px) {
+  .mapSection {
+    grid-template-columns: 1fr;
+    min-height: unset;
+  }
+}
+
+/* map wrapper with toggle + legend */
+.mapWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 260px;
+}
+
+.mapCanvas {
+  flex: 1;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  min-height: 220px;
+}
+
+.mapToggle {
+  display: flex;
+  gap: 6px;
+}
+
+.toggleBtn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.toggleActive {
+  background: rgba(79, 195, 247, 0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.mapLegend {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── lap list ── */
+.lapSection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.lapList {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lapRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: 12px;
+}
+
+.lapNum  { color: var(--muted); min-width: 40px; }
+.lapTime { flex: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.lapTag  {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.lapPb      { border-color: rgba(179,136,255,0.3); }
+.lapPb .lapTag { background: rgba(179,136,255,0.15); color: var(--purple); }
+
+.lapValid   { }
+.lapValid .lapTag { background: rgba(105,240,174,0.1); color: var(--green); }
+
+.lapInvalid { opacity: 0.5; }
+.lapInvalid .lapTag { background: rgba(239,83,80,0.1); color: var(--red); }
+
+/* ── stats chips row ── */
+.statsRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.statChip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 90px;
+}
+
+.statLabel {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.statVal {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ── report grid ── */
+.reportGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 600px) {
+  .reportGrid { grid-template-columns: 1fr; }
+}
+
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.cardTitle {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.kvRow {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.kvRow:last-child { border-bottom: none; }
+.kvRow span:first-child { color: var(--muted); }
+
+/* skill bars */
+.skillRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.skillLabel { font-size: 11px; color: var(--muted); min-width: 110px; }
+.skillTrack {
+  flex: 1; height: 5px;
+  background: var(--bg4); border-radius: 3px; overflow: hidden;
+}
+.skillFill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent2), var(--green));
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+.skillVal { font-size: 11px; font-weight: 700; min-width: 26px; text-align: right; }
+.bestSkill { margin-top: 8px; font-size: 11px; color: var(--yellow); }
+
+/* colors */
+.pos    { color: var(--green);  font-weight: 700; }
+.neg    { color: var(--red);    font-weight: 700; }
+.pb     { color: var(--purple); font-weight: 700; }
+.purple { color: var(--purple); font-weight: 700; }
+.muted  { color: var(--muted);  font-size: 13px; }
+
+/* tags */
+.tagList { display: flex; flex-wrap: wrap; gap: 5px; }
+.tag {
+  padding: 3px 8px;
+  background: rgba(79, 195, 247, 0.1);
+  border: 1px solid rgba(79, 195, 247, 0.25);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+/* focus list */
+.focusRow {
+  font-size: 12px;
+  color: var(--text);
+  padding: 3px 0;
+  line-height: 1.5;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.focusRow:last-child { border-bottom: none; }
+
+.noReport {
+  padding: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  line-height: 1.7;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}

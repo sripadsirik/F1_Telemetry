@@ -200,6 +200,89 @@ class WebServer:
                 })
             return jsonify(result)
 
+        @app.route('/session/<session_id>/track-data')
+        def session_track_data(session_id):
+            safe_id = os.path.basename(session_id)
+            base = SessionManager().base_dir
+            folder = os.path.join(base, safe_id)
+            if not os.path.isdir(folder):
+                return jsonify({'ok': False, 'error': 'Session not found'}), 404
+            try:
+                import pandas as pd  # lazy import — already a dep via marco_core
+                result: dict = {'ok': True, 'folder': safe_id}
+
+                # ── reference lap → track outline + heatmap ──────────────────
+                ref_path = os.path.join(folder, 'reference_lap.csv')
+                track_outline: list = []
+                heatmap: list = []
+                if os.path.exists(ref_path):
+                    ref = pd.read_csv(ref_path)
+                    step = max(1, len(ref) // 3000)
+                    s = ref.iloc[::step].copy()
+                    for col in ('speed', 'throttle', 'brake', 'pos_x', 'pos_z'):
+                        if col in s.columns:
+                            s[col] = s[col].fillna(0)
+                    track_outline = [
+                        [float(r.pos_x), float(r.pos_z)]
+                        for r in s.itertuples()
+                    ]
+                    heatmap = [
+                        {
+                            'x': float(r.pos_x), 'z': float(r.pos_z),
+                            'speed': float(r.speed),
+                            'throttle': float(r.throttle),
+                            'brake': float(r.brake),
+                        }
+                        for r in s.itertuples()
+                    ]
+                result['track_outline'] = track_outline
+                result['heatmap'] = heatmap
+
+                # ── lap list from telemetry ───────────────────────────────────
+                tel_path = os.path.join(folder, 'telemetry.csv')
+                laps: list = []
+                if os.path.exists(tel_path):
+                    needed = ['session_time', 'last_lap_time', 'lap_invalid', 'current_lap_num']
+                    tel = pd.read_csv(tel_path, usecols=needed)
+                    tel = tel.sort_values('session_time').reset_index(drop=True)
+                    tel['_prev'] = tel['last_lap_time'].shift(1).fillna(0)
+                    completions = tel[
+                        (tel['last_lap_time'] > 0) &
+                        ((tel['last_lap_time'] - tel['_prev']).abs() > 0.001)
+                    ]
+                    for i, (_, row) in enumerate(completions.iterrows()):
+                        laps.append({
+                            'lap_num': i + 1,
+                            'time': round(float(row['last_lap_time']), 3),
+                            'valid': not bool(row['lap_invalid']),
+                        })
+                result['laps'] = laps
+                valid_times = [l['time'] for l in laps if l['valid']]
+                result['pb_time'] = min(valid_times) if valid_times else None
+
+                # ── performance report ────────────────────────────────────────
+                report_path = os.path.join(folder, 'performance_report.json')
+                result['report'] = None
+                if os.path.exists(report_path):
+                    with open(report_path, 'r', encoding='utf-8') as f:
+                        result['report'] = json.load(f)
+
+                return jsonify(result)
+            except Exception as exc:
+                return jsonify({'ok': False, 'error': str(exc)}), 500
+
+        @app.route('/session/<session_id>/open-folder', methods=['POST'])
+        def open_session_folder(session_id):
+            safe_id = os.path.basename(session_id)
+            folder_path = os.path.join(SessionManager().base_dir, safe_id)
+            if not os.path.isdir(folder_path):
+                return jsonify({'ok': False, 'error': 'Folder not found'}), 404
+            try:
+                os.startfile(folder_path)  # Windows Explorer
+                return jsonify({'ok': True})
+            except Exception as exc:
+                return jsonify({'ok': False, 'error': str(exc)}), 500
+
         @app.route('/session/<session_id>/report')
         def session_report(session_id):
             safe_id = os.path.basename(session_id)

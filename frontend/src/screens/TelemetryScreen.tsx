@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../App'
+import { useToast } from '../context/ToastContext'
 import TrackCanvas from '../components/TrackCanvas'
 import type { StatePayload, LapEntry } from '../types'
 import styles from '../styles/telemetry.module.css'
@@ -251,6 +252,7 @@ function SpeechLog({ state }: { state: StatePayload }) {
 export default function TelemetryScreen() {
   const navigate = useNavigate()
   const { state, socketConnected, startSession, stopSession } = useApp()
+  const { addToast } = useToast()
   const [compareSource, setCompareSource] = useState<'current' | 'last'>('last')
   const [compareEnabled, setCompareEnabled] = useState(true)
 
@@ -355,13 +357,25 @@ export default function TelemetryScreen() {
 
       {/* ── controls ── */}
       <div className={styles.controls}>
-        <button className={`${styles.ctrlBtn} ${styles.btnCoach}`} disabled={isActive} onClick={() => startSession(1)}>
+        <button
+          className={`${styles.ctrlBtn} ${styles.btnCoach}`}
+          disabled={isActive}
+          onClick={() => { startSession(1); addToast('Coaching started', 'success') }}
+        >
           Live Coaching
         </button>
-        <button className={`${styles.ctrlBtn} ${styles.btnLog}`} disabled={isActive} onClick={() => startSession(2)}>
+        <button
+          className={`${styles.ctrlBtn} ${styles.btnLog}`}
+          disabled={isActive}
+          onClick={() => { startSession(2); addToast('Coaching + Logging started', 'success') }}
+        >
           Coaching + Log
         </button>
-        <button className={`${styles.ctrlBtn} ${styles.btnStop}`} disabled={!isActive} onClick={stopSession}>
+        <button
+          className={`${styles.ctrlBtn} ${styles.btnStop}`}
+          disabled={!isActive}
+          onClick={() => { stopSession(); addToast('Session stopped — check Past Sessions for your report', 'info') }}
+        >
           Stop Session
         </button>
       </div>
