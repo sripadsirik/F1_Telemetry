@@ -1,6 +1,7 @@
-﻿import logging
+import logging
 import os
 import socket
+import sys
 import threading
 import time
 import json
@@ -17,6 +18,61 @@ from marco_core import SessionManager, shared_state
 
 WEB_PORT = 5000
 
+# ---------------------------------------------------------------------------
+# Resolve base directory — works both from source and PyInstaller bundle.
+# ---------------------------------------------------------------------------
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    _BASE_DIR = sys._MEIPASS          # type: ignore[attr-defined]
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+_FRONTEND_DIST = os.path.join(_BASE_DIR, 'frontend', 'dist')
+
+
+# ---------------------------------------------------------------------------
+# State payload builder — module-level so both start() and _telemetry_emitter
+# can call it without closure tricks.
+# ---------------------------------------------------------------------------
+_MAX_HEATMAP_PTS = 8_000   # ~1 lap of high-res trail is plenty; canvas uses
+                            # track_outline for the heatmap once it's available.
+
+def _build_state_payload() -> dict:
+    # Downsample heatmap_points so the payload stays small after many laps.
+    hp: list = shared_state['heatmap_points']
+    if len(hp) > _MAX_HEATMAP_PTS:
+        step = max(1, len(hp) // _MAX_HEATMAP_PTS)
+        hp = hp[::step]
+
+    return {
+        'active':                  shared_state['session_active'],
+        'track_outline':           shared_state['track_outline'],
+        'laps':                    shared_state['lap_times'],
+        'x':                       shared_state['position']['x'],
+        'z':                       shared_state['position']['z'],
+        'speed':                   shared_state['current_speed'],
+        'gear':                    shared_state['current_gear'],
+        'lap':                     shared_state['current_lap_num'],
+        'delta':                   shared_state['current_delta'],
+        'sector':                  shared_state['current_sector'],
+        'sector_colors':           shared_state['sector_colors'],
+        'fastest_lap':             shared_state['fastest_lap'],
+        'speech_log':              shared_state['speech_log'][-20:],
+        'bin_meta':                shared_state['bin_meta'],
+        'reference_bins':          shared_state['reference_bins'],
+        'current_lap_bins':        shared_state['current_lap_bins'],
+        'segment_deltas':          shared_state['segment_deltas'],
+        'last_lap_segment_deltas': shared_state['last_lap_segment_deltas'],
+        'heatmap_points':          hp,
+        'corner_metrics':          shared_state['corner_metrics'],
+        'time_loss_summary':       shared_state['time_loss_summary'],
+        'corner_mastery':          shared_state['corner_mastery'],
+        'consistency':             shared_state['consistency'],
+        'driver_profile':          shared_state['driver_profile'],
+        'skill_scores':            shared_state['skill_scores'],
+        'optimal_lap':             shared_state['optimal_lap'],
+        'session_report_summary':  shared_state['session_report_summary'],
+    }
+
 
 class WebServer:
     """Flask web server for phone interface."""
@@ -27,10 +83,9 @@ class WebServer:
         self.local_ip = self._get_local_ip()
         self.emitter_thread = None
         self.emitter_running = False
-        self.frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend')
+        self.frontend_dir = _FRONTEND_DIST
 
     def _get_local_ip(self):
-        """Get the local LAN IP address."""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -44,7 +99,6 @@ class WebServer:
                 return "127.0.0.1"
 
     def _print_qr_code(self, url):
-        """Print scannable QR code in terminal using ANSI colors."""
         try:
             qr = qrcode.QRCode(
                 version=None,
@@ -56,20 +110,15 @@ class WebServer:
             qr.make(fit=True)
             matrix = qr.get_matrix()
 
-            # Use ANSI: white bg + black fg for dark modules, white bg + white fg for light
-            # This guarantees dark-on-light contrast regardless of terminal theme
-            RESET = "\033[0m"
-            WHITE_BG = "\033[47m"
+            RESET        = "\033[0m"
+            WHITE_BG     = "\033[47m"
             BLACK_ON_WHITE = "\033[30;47m"
 
             print()
             for row in matrix:
                 line = "  " + WHITE_BG
                 for cell in row:
-                    if cell:
-                        line += BLACK_ON_WHITE + "\u2588\u2588"  # dark module
-                    else:
-                        line += WHITE_BG + "  "                  # light module
+                    line += (BLACK_ON_WHITE + "\u2588\u2588") if cell else (WHITE_BG + "  ")
                 line += RESET
                 print(line)
             print()
@@ -78,65 +127,33 @@ class WebServer:
 
     def start(self):
         """Start the web server in a background thread."""
-        log = logging.getLogger('werkzeug')
-        log.setLevel(logging.ERROR)
-        flask_log = logging.getLogger('flask')
-        flask_log.setLevel(logging.ERROR)
-        engineio_log = logging.getLogger('engineio')
-        engineio_log.setLevel(logging.ERROR)
-        socketio_log = logging.getLogger('socketio')
-        socketio_log.setLevel(logging.ERROR)
+        for name in ('werkzeug', 'flask', 'engineio', 'socketio'):
+            logging.getLogger(name).setLevel(logging.ERROR)
 
         self.app = Flask(__name__)
         self.app.config['SECRET_KEY'] = 'marco-f1-engineer'
-        self.socketio = SocketIO(self.app, cors_allowed_origins="*", async_mode='threading', logger=False, engineio_logger=False)
+        self.socketio = SocketIO(
+            self.app,
+            cors_allowed_origins="*",
+            async_mode='threading',
+            logger=False,
+            engineio_logger=False,
+        )
         shared_state['socketio'] = self.socketio
 
         app = self.app
         sio = self.socketio
+        frontend_dir = self.frontend_dir
 
-        def build_state_payload():
-            return {
-                'active': shared_state['session_active'],
-                'track_outline': shared_state['track_outline'],
-                'laps': shared_state['lap_times'],
-                'x': shared_state['position']['x'],
-                'z': shared_state['position']['z'],
-                'speed': shared_state['current_speed'],
-                'gear': shared_state['current_gear'],
-                'lap': shared_state['current_lap_num'],
-                'delta': shared_state['current_delta'],
-                'sector': shared_state['current_sector'],
-                'sector_colors': shared_state['sector_colors'],
-                'fastest_lap': shared_state['fastest_lap'],
-                'speech_log': shared_state['speech_log'][-20:],
-                'bin_meta': shared_state['bin_meta'],
-                'reference_bins': shared_state['reference_bins'],
-                'current_lap_bins': shared_state['current_lap_bins'],
-                'segment_deltas': shared_state['segment_deltas'],
-                'last_lap_segment_deltas': shared_state['last_lap_segment_deltas'],
-                'heatmap_points': shared_state['heatmap_points'],
-                'corner_metrics': shared_state['corner_metrics'],
-                'time_loss_summary': shared_state['time_loss_summary'],
-                'corner_mastery': shared_state['corner_mastery'],
-                'consistency': shared_state['consistency'],
-                'driver_profile': shared_state['driver_profile'],
-                'skill_scores': shared_state['skill_scores'],
-                'optimal_lap': shared_state['optimal_lap'],
-                'session_report_summary': shared_state['session_report_summary'],
-            }
-
-        @app.route('/')
-        def index():
-            return send_from_directory(self.frontend_dir, 'index.html')
-
+        # ── static assets ───────────────────────────────────────────────────
         @app.route('/assets/<path:filename>')
         def assets(filename):
-            return send_from_directory(self.frontend_dir, filename)
+            return send_from_directory(os.path.join(frontend_dir, 'assets'), filename)
 
+        # ── API ─────────────────────────────────────────────────────────────
         @app.route('/state')
         def state():
-            return jsonify(build_state_payload())
+            return jsonify(_build_state_payload())
 
         @app.route('/start/<int:mode>', methods=['POST'])
         def start_mode(mode):
@@ -173,7 +190,7 @@ class WebServer:
                             'generated_at': report.get('generated_at'),
                         }
                     except Exception:
-                        report_summary = None
+                        pass
                 result.append({
                     'folder': s['folder'],
                     'path': s['path'],
@@ -185,8 +202,10 @@ class WebServer:
 
         @app.route('/session/<session_id>/report')
         def session_report(session_id):
-            safe_session_id = os.path.basename(session_id)
-            report_path = os.path.join(SessionManager().base_dir, safe_session_id, 'performance_report.json')
+            safe_id = os.path.basename(session_id)
+            report_path = os.path.join(
+                SessionManager().base_dir, safe_id, 'performance_report.json'
+            )
             if not os.path.exists(report_path):
                 return jsonify({'ok': False, 'error': 'Report not found'}), 404
             try:
@@ -196,16 +215,32 @@ class WebServer:
             except Exception as exc:
                 return jsonify({'ok': False, 'error': str(exc)}), 500
 
+        # ── Socket.IO ───────────────────────────────────────────────────────
         @sio.on('connect')
         def handle_connect():
-            emit('session_state', build_state_payload())
+            # Send full state immediately so the new client is up-to-date.
+            emit('session_state', _build_state_payload())
 
+        # ── SPA fallback ────────────────────────────────────────────────────
+        @app.route('/')
+        def index():
+            return send_from_directory(frontend_dir, 'index.html')
+
+        @app.route('/<path:path>')
+        def spa_fallback(path):
+            full = os.path.join(frontend_dir, path)
+            if os.path.isfile(full):
+                return send_from_directory(frontend_dir, path)
+            return send_from_directory(frontend_dir, 'index.html')
+
+        # ── start emitter ───────────────────────────────────────────────────
         self.emitter_running = True
-        self.emitter_thread = threading.Thread(target=self._telemetry_emitter, daemon=True)
+        self.emitter_thread = threading.Thread(
+            target=self._telemetry_emitter, daemon=True
+        )
         self.emitter_thread.start()
 
         url = f"http://{self.local_ip}:{WEB_PORT}"
-
         print(f"\n  {'='*50}")
         print("  PHONE REMOTE CONTROL")
         print(f"  {'='*50}")
@@ -214,28 +249,62 @@ class WebServer:
         print(f"  Or open: {url}")
         print(f"  {'='*50}\n")
 
+        if not os.path.isdir(frontend_dir):
+            print(f"  [!] Frontend build not found at: {frontend_dir}")
+            print("      Run:  cd frontend && npm install && npm run build")
+
         server_thread = threading.Thread(
-            target=lambda: sio.run(app, host='0.0.0.0', port=WEB_PORT, use_reloader=False, log_output=False),
+            target=lambda: sio.run(
+                app, host='0.0.0.0', port=WEB_PORT,
+                use_reloader=False, log_output=False,
+            ),
             daemon=True,
         )
         server_thread.start()
 
+    # ── emitter ─────────────────────────────────────────────────────────────
     def _telemetry_emitter(self):
-        """Emit telemetry data to connected web clients."""
+        """
+        Two-speed push to connected clients:
+          • Fast  (10 ms)  — car position, speed, gear, delta, sector  [telemetry]
+          • Slow  (1 s)    — full analytics state (laps, cards, speech) [session_state]
+
+        The fast event keeps the track map and HUD silky-smooth.
+        The slow event ensures lap times, corner mastery, consistency, etc.
+        refresh automatically without the user having to reload.
+        """
+        last_full_emit = 0.0
+
         while self.emitter_running:
             try:
-                if self.socketio and shared_state['session_active']:
-                    self.socketio.emit('telemetry', {
-                        'x': shared_state['position']['x'],
-                        'z': shared_state['position']['z'],
-                        'speed': shared_state['current_speed'],
-                        'gear': shared_state['current_gear'],
-                        'lap': shared_state['current_lap_num'],
-                        'delta': round(shared_state['current_delta'], 3),
-                        'sector': shared_state['current_sector'],
-                        'sector_colors': shared_state['sector_colors'],
-                        'fastest_lap': shared_state['fastest_lap'],
-                    }, namespace='/')
+                sio = self.socketio
+                if sio:
+                    active = shared_state['session_active']
+                    now = time.monotonic()
+
+                    # ── fast: car telemetry (always, so idle screen stays live) ──
+                    if active:
+                        sio.emit('telemetry', {
+                            'x':            shared_state['position']['x'],
+                            'z':            shared_state['position']['z'],
+                            'speed':        shared_state['current_speed'],
+                            'gear':         shared_state['current_gear'],
+                            'lap':          shared_state['current_lap_num'],
+                            'delta':        round(shared_state['current_delta'], 3),
+                            'sector':       shared_state['current_sector'],
+                            'sector_colors': shared_state['sector_colors'],
+                            'fastest_lap':  shared_state['fastest_lap'],
+                        }, namespace='/')
+
+                    # ── slow: full analytics state every 1 s ──────────────────
+                    #   Active session  → 1 s   (lap times, cards update after each lap)
+                    #   Idle            → 5 s   (just in case something changes)
+                    full_interval = 1.0 if active else 5.0
+                    if now - last_full_emit >= full_interval:
+                        sio.emit('session_state', _build_state_payload(), namespace='/')
+                        last_full_emit = now
+
             except Exception:
                 pass
-            time.sleep(0.01)  # keep same smoothness as current setup
+
+            time.sleep(0.01)

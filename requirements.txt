@@ -1,0 +1,22 @@
+# Core
+flask>=3.0
+flask-socketio>=5.0
+simple-websocket>=1.0
+qrcode[pil]>=7.0
+
+# Telemetry / analytics
+pandas>=2.0
+numpy>=1.24
+
+# TTS (standard – always install)
+pyttsx3>=2.90
+pywin32>=300          ; sys_platform == "win32"
+
+# TTS (optional neural voice – much more soothing)
+# edge-tts>=6.0       # uncomment and pip install to enable MARCO_USE_NEURAL=1
+
+# Visualization (optional – for session analysis plots)
+matplotlib>=3.7
+
+# Build (only needed when creating the .exe)
+# pyinstaller>=6.0

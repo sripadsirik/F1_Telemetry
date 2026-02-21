@@ -40,6 +40,15 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
 
+# Optional: edge-tts neural voice (pip install edge-tts)
+try:
+    import edge_tts as _edge_tts_module
+    import asyncio as _asyncio
+    import tempfile as _tempfile
+    EDGE_TTS_AVAILABLE = True
+except ImportError:
+    EDGE_TTS_AVAILABLE = False
+
 try:
     import matplotlib.pyplot as plt
     import numpy as np
@@ -68,6 +77,119 @@ ENTRY_SPEED_DIFF_KPH = 8.0
 APEX_SPEED_DIFF_KPH = 6.0
 EXIT_SPEED_DIFF_KPH = 8.0
 THROTTLE_POINT_DIFF_M = 15.0
+
+# ---------------------------------------------------------------------------
+# TTS voice configuration
+#   Override via environment variables:
+#     MARCO_TTS_RATE   – words-per-minute  (default 170; lower = calmer)
+#     MARCO_TTS_VOLUME – 0.0–1.0           (default 0.9)
+#     MARCO_TTS_VOICE  – substring to match against voice name/id
+#                        e.g. "zira", "female", "hazel", "david"
+#     MARCO_USE_NEURAL – set to "1" to use edge-tts if installed
+#     MARCO_NEURAL_VOICE – edge-tts voice name (default en-GB-SoniaNeural)
+# ---------------------------------------------------------------------------
+MARCO_TTS_RATE   = int(os.environ.get('MARCO_TTS_RATE', '170'))
+MARCO_TTS_VOLUME = float(os.environ.get('MARCO_TTS_VOLUME', '0.9'))
+MARCO_TTS_VOICE  = os.environ.get('MARCO_TTS_VOICE', 'female').lower()
+MARCO_USE_NEURAL = os.environ.get('MARCO_USE_NEURAL', '').lower() in ('1', 'true', 'yes')
+MARCO_NEURAL_VOICE = os.environ.get('MARCO_NEURAL_VOICE', 'en-GB-SoniaNeural')
+
+# Cache for the selected pyttsx3 voice id (selected once on first use)
+_tts_voice_id: 'str | None' = None
+_tts_voice_selected: bool = False
+
+
+def _select_tts_voice(engine) -> 'str | None':
+    """Pick the most soothing available voice and return its id."""
+    voices = engine.getProperty('voices')
+    if not voices:
+        return None
+
+    print("  [TTS] Available voices:")
+    for v in voices:
+        print(f"    • {v.name}  ({v.id})")
+
+    target = MARCO_TTS_VOICE  # already lower-cased
+
+    # 1) Try user-specified substring first
+    for v in voices:
+        if target in v.name.lower() or target in v.id.lower():
+            print(f"  [TTS] Selected voice: {v.name}")
+            return v.id
+
+    # 2) Fallback: well-known soothing voices (Windows/macOS/Linux)
+    preferred_names = ['zira', 'hazel', 'susan', 'karen', 'victoria',
+                       'female', 'woman', 'samantha', 'aria', 'jenny']
+    for pref in preferred_names:
+        for v in voices:
+            if pref in v.name.lower() or pref in v.id.lower():
+                print(f"  [TTS] Selected voice (fallback): {v.name}")
+                return v.id
+
+    # 3) Any non-first voice
+    if len(voices) > 1:
+        print(f"  [TTS] Selected voice (second available): {voices[1].name}")
+        return voices[1].id
+
+    print(f"  [TTS] Using default voice: {voices[0].name}")
+    return voices[0].id
+
+
+def _configure_tts_engine(engine) -> None:
+    """Apply rate/volume/voice settings to a pyttsx3 engine instance."""
+    global _tts_voice_id, _tts_voice_selected
+    engine.setProperty('rate', MARCO_TTS_RATE)
+    engine.setProperty('volume', MARCO_TTS_VOLUME)
+    if not _tts_voice_selected:
+        _tts_voice_id = _select_tts_voice(engine)
+        _tts_voice_selected = True
+    if _tts_voice_id:
+        try:
+            engine.setProperty('voice', _tts_voice_id)
+        except Exception:
+            pass  # voice id may be invalid on some platforms
+
+
+def _speak_neural(message: str) -> bool:
+    """Speak using edge-tts neural voice. Returns True on success."""
+    if not (EDGE_TTS_AVAILABLE and MARCO_USE_NEURAL):
+        return False
+    try:
+        async def _gen(path: str) -> None:
+            c = _edge_tts_module.Communicate(message, MARCO_NEURAL_VOICE)
+            await c.save(path)
+
+        with _tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
+            tmp = f.name
+
+        loop = _asyncio.new_event_loop()
+        _asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_gen(tmp))
+        finally:
+            loop.close()
+
+        # Play on Windows via PowerShell MediaPlayer (no extra dependency)
+        import subprocess
+        cmd = (
+            f"Add-Type -AssemblyName presentationCore; "
+            f"$p=New-Object System.Windows.Media.MediaPlayer; "
+            f"$p.Open([uri]::new('{tmp}')); "
+            f"$p.Play(); Start-Sleep -s 10; $p.Close()"
+        )
+        subprocess.run(
+            ['powershell', '-NoProfile', '-Command', cmd],
+            capture_output=True, timeout=15
+        )
+        return True
+    except Exception as exc:
+        print(f"  [edge-tts error: {exc}]")
+        return False
+    finally:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
 
 
 def _default_analytics_state():
@@ -822,11 +944,16 @@ class F1Coach:
                 message = self.tts_queue.get(self.current_lap_distance, timeout=0.1)
                 if message is None:
                     continue
+
+                # Try neural voice first (edge-tts, if enabled and installed)
+                if _speak_neural(message):
+                    continue
+
+                # Fall back to pyttsx3 with soothing settings
                 engine = None
                 try:
                     engine = pyttsx3.init()
-                    engine.setProperty('rate', 180)
-                    engine.setProperty('volume', 1.0)
+                    _configure_tts_engine(engine)
                     engine.say(message)
                     engine.runAndWait()
                 except Exception as e:
@@ -836,7 +963,7 @@ class F1Coach:
                         try:
                             engine.stop()
                             del engine
-                        except:
+                        except Exception:
                             pass
             except Exception:
                 pass

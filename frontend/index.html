@@ -1,89 +1,12 @@
-﻿<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Marco - F1 Race Engineer</title>
-<link rel="stylesheet" href="/assets/styles.css">
-</head>
-<body>
-<div class="container">
-    <div class="track-panel">
-        <h2>Live Track</h2>
-        <div class="sector-bars">
-            <div class="sector-box" id="sd1">S1</div>
-            <div class="sector-box" id="sd2">S2</div>
-            <div class="sector-box" id="sd3">S3</div>
-        </div>
-        <div class="compare-controls">
-            <label><input type="checkbox" id="compareToggle" checked> Compare vs PB</label>
-            <select id="compareSource">
-                <option value="current">Current Lap</option>
-                <option value="last">Last Lap</option>
-            </select>
-        </div>
-        <div class="delta-display delta-neutral" id="deltaDisplay">--</div>
-        <canvas id="trackCanvas"></canvas>
-        <div class="telemetry-bar">
-            <div>SPD <span class="val" id="speedVal">0</span></div>
-            <div>GEAR <span class="val" id="gearVal">N</span></div>
-            <div>LAP <span class="val" id="lapVal">--</span></div>
-        </div>
-    </div>
-
-    <div class="laps-panel">
-        <h2>Lap Times</h2>
-        <div class="fastest-row">
-            <span class="label">FASTEST</span>
-            <span class="lap" id="fastestLapNo">--</span>
-            <span class="time" id="fastestLapVal">--:--.---</span>
-        </div>
-        <div class="optimal-row">
-            <span class="label">OPTIMAL</span>
-            <span class="time" id="optimalLapVal">--:--.---</span>
-            <span class="gain" id="optimalGainVal">--</span>
-        </div>
-        <div class="lap-list" id="lapList"></div>
-
-        <div class="info-card">
-            <h3>Top Time Losses</h3>
-            <div class="info-list" id="timeLossList"></div>
-        </div>
-
-        <div class="info-card">
-            <h3>Consistency</h3>
-            <div class="info-list">
-                <div class="kv-row"><span>Lap sigma</span><span id="lapSigmaVal">--</span></div>
-                <div class="kv-row"><span>Most inconsistent</span><span id="mostInconsistentVal">--</span></div>
-                <div class="kv-row"><span>Most consistent</span><span id="mostConsistentVal">--</span></div>
-            </div>
-        </div>
-
-        <div class="info-card">
-            <h3>Driver Profile</h3>
-            <div class="tag-list" id="profileTags"></div>
-        </div>
-
-        <div class="info-card">
-            <h3>Skill Scores</h3>
-            <div id="skillBars"></div>
-        </div>
-
-        <div class="info-card">
-            <h3>Corner Mastery</h3>
-            <div class="info-list" id="cornerMasteryList"></div>
-        </div>
-    </div>
-
-    <div class="controls" id="controls">
-        <button class="btn btn-coach" id="btnCoach" onclick="startMode(1)">Live Coaching</button>
-        <button class="btn btn-log" id="btnLog" onclick="startMode(2)">Coaching + Log</button>
-        <button class="btn btn-analyze" id="btnAnalyze" onclick="showAnalyze()">Analyze</button>
-        <button class="btn btn-stop" id="btnStop" onclick="endSession()">Stop Session</button>
-    </div>
-</div>
-
-<script src="/socket.io/socket.io.js"></script>
-<script src="/assets/app.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Marco — F1 Engineer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

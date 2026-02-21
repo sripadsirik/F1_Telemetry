@@ -1,0 +1,168 @@
+.page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 20px;
+  gap: 20px;
+  overflow-y: auto;
+  background: radial-gradient(ellipse at 50% 10%, #0e1a38 0%, var(--bg) 70%);
+}
+
+/* ── hero ── */
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent2) 0%, var(--accent) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  font-weight: 900;
+  color: #fff;
+  box-shadow: 0 0 32px rgba(79, 195, 247, 0.3);
+}
+
+.title {
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  color: var(--accent);
+  text-shadow: 0 0 30px rgba(79, 195, 247, 0.4);
+}
+
+.sub {
+  font-size: 13px;
+  color: var(--muted);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* ── status bar ── */
+.statusBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 12px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dotOn  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dotOff { background: var(--muted); }
+
+.statusText { color: var(--text); }
+
+.liveBadge {
+  margin-left: 4px;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* ── quote ── */
+.quote {
+  max-width: 340px;
+  text-align: center;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 10px 16px;
+  border-left: 2px solid var(--border);
+}
+
+.quoteIcon {
+  color: var(--accent);
+  font-style: normal;
+  font-size: 20px;
+  vertical-align: -4px;
+  margin: 0 2px;
+}
+
+/* ── action buttons ── */
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 320px;
+}
+
+.btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: #fff;
+}
+
+.btnIcon {
+  font-size: 16px;
+  opacity: 0.85;
+}
+
+.btnStart {
+  background: linear-gradient(135deg, var(--accent2) 0%, var(--accent) 100%);
+  box-shadow: 0 4px 20px rgba(79, 195, 247, 0.25);
+}
+
+.btnLog {
+  background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%);
+  box-shadow: 0 4px 20px rgba(105, 240, 174, 0.15);
+}
+
+.btnDash {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.btnStop {
+  background: linear-gradient(135deg, #b71c1c 0%, #e53935 100%);
+  box-shadow: 0 4px 20px rgba(239, 83, 80, 0.2);
+}
+
+/* ── session summary ── */
+.summary {
+  width: 100%;
+  max-width: 320px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.summaryRow {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.summaryRow:last-child { border-bottom: none; }
+
+.pb { color: var(--purple); font-weight: 700; }
