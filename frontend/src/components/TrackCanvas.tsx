@@ -160,14 +160,30 @@ export default function TrackCanvas({ state, compareSource = 'last' }: Props) {
     const wrap = wrapRef.current
     const canvas = canvasRef.current
     if (!wrap || !canvas) return
+
     const sync = () => {
-      canvas.width = wrap.clientWidth
-      canvas.height = wrap.clientHeight
+      const nextW = wrap.clientWidth
+      const nextH = wrap.clientHeight
+      if (canvas.width !== nextW) canvas.width = nextW
+      if (canvas.height !== nextH) canvas.height = nextH
     }
+
     sync()
-    const ro = new ResizeObserver(sync)
-    ro.observe(wrap)
-    return () => ro.disconnect()
+
+    const roCtor = (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver
+    if (typeof roCtor === 'function') {
+      const ro = new roCtor(sync)
+      ro.observe(wrap)
+      return () => ro.disconnect()
+    }
+
+    const onResize = () => sync()
+    const pollId = window.setInterval(sync, 400)
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.clearInterval(pollId)
+    }
   }, [])
 
   return (

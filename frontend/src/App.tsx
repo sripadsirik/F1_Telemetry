@@ -52,8 +52,17 @@ function AppInner() {
     <AppContext.Provider value={appState}>
       <Routes>
         <Route path="/" element={<MenuScreen />} />
+        <Route path="/legacy" element={<MenuScreen />} />
         <Route
           path="/telemetry"
+          element={
+            <ErrorBoundary>
+              <TelemetryScreen />
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/legacy/telemetry"
           element={
             <ErrorBoundary>
               <TelemetryScreen />
@@ -69,7 +78,23 @@ function AppInner() {
           }
         />
         <Route
+          path="/legacy/sessions"
+          element={
+            <ErrorBoundary>
+              <SessionsScreen />
+            </ErrorBoundary>
+          }
+        />
+        <Route
           path="/sessions/:sessionId"
+          element={
+            <ErrorBoundary>
+              <SessionAnalysisScreen />
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/legacy/sessions/:sessionId"
           element={
             <ErrorBoundary>
               <SessionAnalysisScreen />

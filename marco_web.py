@@ -14,7 +14,7 @@ try:
 except ImportError:
     WEB_AVAILABLE = False
 
-from marco_core import SessionManager, shared_state
+from marco_core import SessionManager, shared_state, analyze_session, plot_session
 
 WEB_PORT = 5000
 
@@ -26,7 +26,7 @@ if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
 else:
     _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-_FRONTEND_DIST = os.path.join(_BASE_DIR, 'frontend', 'dist')
+_FRONTEND_DIST   = os.path.join(_BASE_DIR, 'frontend', 'dist')
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +283,22 @@ class WebServer:
             except Exception as exc:
                 return jsonify({'ok': False, 'error': str(exc)}), 500
 
+        @app.route('/session/<session_id>/save-plot', methods=['POST'])
+        def save_session_plot(session_id):
+            safe_id = os.path.basename(session_id)
+            folder = os.path.join(SessionManager().base_dir, safe_id)
+            if not os.path.isdir(folder):
+                return jsonify({'ok': False, 'error': 'Session not found'}), 404
+            try:
+                result = analyze_session(folder)
+                if not result or not result[2]:
+                    return jsonify({'ok': False, 'error': 'Analysis failed or no valid laps found'}), 500
+                df, lap_info, fastest = result
+                plot_session(df, lap_info, fastest['lap_num'], folder, show=False)
+                return jsonify({'ok': True})
+            except Exception as exc:
+                return jsonify({'ok': False, 'error': str(exc)}), 500
+
         @app.route('/session/<session_id>/report')
         def session_report(session_id):
             safe_id = os.path.basename(session_id)
@@ -304,6 +320,7 @@ class WebServer:
             # Send full state immediately so the new client is up-to-date.
             emit('session_state', _build_state_payload())
 
+        # ── Legacy UI (iOS 12 / old Safari) ─────────────────────────────────
         # ── SPA fallback ────────────────────────────────────────────────────
         @app.route('/')
         def index():

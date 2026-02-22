@@ -21,6 +21,9 @@ a = Analysis(
     datas=[
         # Bundle the entire frontend/dist tree
         (frontend_dist, os.path.join('frontend', 'dist')),
+        # Legacy UI for old browsers (iOS 12 / Safari 12)
+        (os.path.join('frontend', 'legacy.html'),          'frontend'),
+        (os.path.join('frontend', 'legacy_sessions.html'), 'frontend'),
     ],
     hiddenimports=[
         # Flask ecosystem

@@ -136,9 +136,22 @@ export default function AnalysisCanvas({ trackOutline, heatmap, mode }: Props) {
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-    const obs = new ResizeObserver(() => draw())
-    obs.observe(el)
-    return () => obs.disconnect()
+
+    const onResize = () => draw()
+
+    const roCtor = (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver
+    if (typeof roCtor === 'function') {
+      const obs = new roCtor(onResize)
+      obs.observe(el)
+      return () => obs.disconnect()
+    }
+
+    window.addEventListener('resize', onResize)
+    const pollId = window.setInterval(onResize, 400)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.clearInterval(pollId)
+    }
   }, [draw])
 
   return (

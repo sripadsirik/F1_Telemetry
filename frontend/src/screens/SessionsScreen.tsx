@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useToast } from '../context/ToastContext'
+import { useRoutePrefix } from '../hooks/useRoutePrefix'
 import styles from '../styles/sessions.module.css'
 
 // ─── types ────────────────────────────────────────────────────────────────────
@@ -247,6 +248,7 @@ function ReportDetail({ report, folder }: { report: Report; folder: string }) {
 
 export default function SessionsScreen() {
   const navigate = useNavigate()
+  const { withPrefix } = useRoutePrefix()
   const { addToast } = useToast()
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const [loading, setLoading] = useState(true)
@@ -296,7 +298,7 @@ export default function SessionsScreen() {
     <div className={styles.screen}>
       {/* top bar */}
       <div className={styles.topBar}>
-        <button className={styles.backBtn} onClick={() => navigate('/')}>← Menu</button>
+        <button className={styles.backBtn} onClick={() => navigate(withPrefix('/'))}>← Menu</button>
         <span className={styles.topTitle}>Past Sessions</span>
         <span className={styles.count}>{sessions.length} session{sessions.length !== 1 ? 's' : ''}</span>
       </div>
@@ -339,7 +341,7 @@ export default function SessionsScreen() {
                     : <span className={styles.noReportBadge}>No report</span>
                   }
                   <Link
-                    to={`/sessions/${s.folder}`}
+                    to={withPrefix(`/sessions/${s.folder}`)}
                     className={styles.analyzeBtn}
                     onClick={e => e.stopPropagation()}
                   >

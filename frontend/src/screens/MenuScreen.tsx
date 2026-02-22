@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../App'
 import { useToast } from '../context/ToastContext'
+import { useRoutePrefix } from '../hooks/useRoutePrefix'
 import styles from '../styles/menu.module.css'
 
 function fmt(sec: number): string {
@@ -11,6 +12,7 @@ function fmt(sec: number): string {
 
 export default function MenuScreen() {
   const navigate = useNavigate()
+  const { withPrefix } = useRoutePrefix()
   const { state, socketConnected, startSession, stopSession } = useApp()
   const { addToast } = useToast()
 
@@ -20,7 +22,7 @@ export default function MenuScreen() {
   const handleStart = async (mode: 1 | 2) => {
     await startSession(mode)
     addToast(mode === 2 ? 'Coaching + Logging started' : 'Coaching started', 'success')
-    navigate('/telemetry')
+    navigate(withPrefix('/telemetry'))
   }
 
   const handleStop = async () => {
@@ -76,7 +78,7 @@ export default function MenuScreen() {
 
         <button
           className={`${styles.btn} ${styles.btnDash}`}
-          onClick={() => navigate('/telemetry')}
+          onClick={() => navigate(withPrefix('/telemetry'))}
         >
           <span className={styles.btnIcon}>◈</span>
           Telemetry Dashboard
@@ -84,7 +86,7 @@ export default function MenuScreen() {
 
         <button
           className={`${styles.btn} ${styles.btnAnalyze}`}
-          onClick={() => navigate('/sessions')}
+          onClick={() => navigate(withPrefix('/sessions'))}
         >
           <span className={styles.btnIcon}>◎</span>
           Analyze Past Sessions

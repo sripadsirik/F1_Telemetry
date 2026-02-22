@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Marco — F1 Engineer</title>
+    <!-- Detect iOS 12 / old Safari that lacks optional chaining & nullish coalescing -->
+    <script>
+      try { new Function('return {}?.x ?? 0')() }
+      catch(e) {
+        if (!window.location.pathname.startsWith('/legacy')) {
+          document.location.replace('/legacy')
+        }
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

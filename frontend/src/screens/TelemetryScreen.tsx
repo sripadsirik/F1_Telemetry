@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../App'
 import { useToast } from '../context/ToastContext'
+import { useRoutePrefix } from '../hooks/useRoutePrefix'
 import TrackCanvas from '../components/TrackCanvas'
 import type { StatePayload, LapEntry } from '../types'
 import styles from '../styles/telemetry.module.css'
@@ -251,6 +252,7 @@ function SpeechLog({ state }: { state: StatePayload }) {
 
 export default function TelemetryScreen() {
   const navigate = useNavigate()
+  const { withPrefix } = useRoutePrefix()
   const { state, socketConnected, startSession, stopSession } = useApp()
   const { addToast } = useToast()
   const [compareSource, setCompareSource] = useState<'current' | 'last'>('last')
@@ -269,7 +271,7 @@ export default function TelemetryScreen() {
     <div className={styles.screen}>
       {/* ── top bar ── */}
       <div className={styles.topBar}>
-        <button className={styles.backBtn} onClick={() => navigate('/')}>← Menu</button>
+        <button className={styles.backBtn} onClick={() => navigate(withPrefix('/'))}>← Menu</button>
         <span className={styles.topTitle}>Telemetry</span>
         <span className={`${styles.liveIndicator} ${socketConnected ? styles.livePing : ''}`}>
           {socketConnected ? '⬤ Live' : '○ Polling'}

@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>Sessions — Marco</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0a1a;
+      color: #dde4ef;
+      font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    button {
+      cursor: pointer;
+      font-family: inherit;
+      font-size: inherit;
+      border: none;
+      outline: none;
+      background: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    button:active { opacity: 0.7; }
+
+    /* ── header ── */
+    .header {
+      background: #0e1120;
+      border-bottom: 1px solid #1e3050;
+      padding: 10px 16px;
+      display: -webkit-flex;
+      display: flex;
+      -webkit-align-items: center;
+      align-items: center;
+      gap: 10px;
+    }
+    .back-btn {
+      color: #4fc3f7;
+      border: 1px solid #1e3050;
+      padding: 5px 11px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .header-title { font-size: 16px; font-weight: 700; color: #dde4ef; -webkit-flex: 1; flex: 1; }
+    .header-count { font-size: 12px; color: #7080a0; -webkit-flex-shrink: 0; flex-shrink: 0; }
+
+    /* ── content ── */
+    .content { padding: 14px 16px; }
+
+    /* ── session card ── */
+    .sess-card {
+      background: #0e1120;
+      border: 1px solid #1e3050;
+      border-radius: 10px;
+      margin-bottom: 10px;
+      overflow: hidden;
+    }
+    .sess-header {
+      padding: 12px 14px;
+      display: -webkit-flex;
+      display: flex;
+      -webkit-align-items: center;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sess-num {
+      font-size: 20px;
+      font-weight: 900;
+      color: #4fc3f7;
+      min-width: 36px;
+    }
+    .sess-info { -webkit-flex: 1; flex: 1; min-width: 0; }
+    .sess-date { font-size: 13px; font-weight: 600; color: #dde4ef; }
+    .sess-sub  { font-size: 11px; color: #7080a0; margin-top: 1px; }
+    .sess-right {
+      display: -webkit-flex;
+      display: flex;
+      -webkit-flex-direction: column;
+      flex-direction: column;
+      -webkit-align-items: flex-end;
+      align-items: flex-end;
+      gap: 4px;
+      -webkit-flex-shrink: 0;
+      flex-shrink: 0;
+    }
+    .badge-report { font-size: 10px; color: #69f0ae; background: rgba(105,240,174,0.1); border: 1px solid rgba(105,240,174,0.25); padding: 2px 7px; border-radius: 5px; }
+    .badge-none   { font-size: 10px; color: #7080a0; background: #141830; border: 1px solid #1e3050; padding: 2px 7px; border-radius: 5px; }
+    .chevron { font-size: 12px; color: #7080a0; }
+
+    /* ── expanded report ── */
+    .sess-body {
+      padding: 0 14px 14px 14px;
+      border-top: 1px solid #1e3050;
+    }
+    .report-grid {
+      display: -webkit-flex;
+      display: flex;
+      -webkit-flex-wrap: wrap;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .report-chip {
+      background: #141830;
+      border: 1px solid #1e3050;
+      border-radius: 8px;
+      padding: 7px 12px;
+      -webkit-flex: 1;
+      flex: 1;
+      min-width: 120px;
+    }
+    .chip-label { font-size: 10px; color: #7080a0; text-transform: uppercase; letter-spacing: 1px; }
+    .chip-val   { font-size: 14px; font-weight: 700; color: #dde4ef; margin-top: 2px; }
+    .chip-val.c-purple { color: #ce93d8; }
+    .chip-val.c-green  { color: #69f0ae; }
+
+    .skill-row {
+      display: -webkit-flex;
+      display: flex;
+      -webkit-align-items: center;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+      font-size: 12px;
+    }
+    .skill-name { color: #7080a0; min-width: 100px; }
+    .skill-bar  { -webkit-flex: 1; flex: 1; height: 5px; background: #1a2040; border-radius: 3px; overflow: hidden; }
+    .skill-fill { height: 100%; background: #4fc3f7; border-radius: 3px; }
+    .skill-num  { font-size: 11px; font-weight: 700; min-width: 26px; text-align: right; }
+
+    .focus-row  { font-size: 12px; color: #dde4ef; padding: 3px 0; border-bottom: 1px solid #1a2a3a; }
+    .focus-row:last-child { border-bottom: none; }
+
+    .tag-list { display: -webkit-flex; display: flex; -webkit-flex-wrap: wrap; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+    .tag { font-size: 11px; color: #4fc3f7; background: rgba(79,195,247,0.08); border: 1px solid rgba(79,195,247,0.2); padding: 2px 8px; border-radius: 8px; }
+
+    .section-title { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #7080a0; margin: 12px 0 6px 0; }
+
+    .no-report { color: #7080a0; font-size: 13px; padding: 10px 0; }
+    .loading   { color: #7080a0; font-size: 13px; padding: 10px 0; }
+
+    .empty { color: #7080a0; font-size: 13px; text-align: center; padding: 40px 20px; }
+    .spinner { display: inline-block; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <button class="back-btn" onclick="location.href='/legacy'">&#8592; Menu</button>
+  <span class="header-title">Past Sessions</span>
+  <span id="header-count" class="header-count"></span>
+</div>
+
+<div class="content">
+  <div id="list"><div class="empty">Loading sessions&#8230;</div></div>
+</div>
+
+<script>
+  var sessions = [];
+  var expanded = null;
+  var reportCache = {};
+
+  function fmtTime(sec) {
+    if (typeof sec !== 'number' || !isFinite(sec) || sec <= 0) return '--:---.---';
+    var m = Math.floor(sec / 60);
+    var s = (sec % 60).toFixed(3);
+    while (s.length < 6) s = '0' + s;
+    return m + ':' + s;
+  }
+
+  function folderToDate(folder) {
+    var m = folder.match(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
+    if (!m) return folder;
+    return m[3] + '/' + m[2] + '/' + m[1] + '  ' + m[4] + ':' + m[5];
+  }
+
+  function sessionNum(folder) {
+    var m = folder.match(/session_(\d+)/);
+    return m ? '#' + parseInt(m[1]) : folder;
+  }
+
+  function renderSessions() {
+    var list = document.getElementById('list');
+    if (sessions.length === 0) {
+      list.innerHTML = '<div class="empty">No sessions found.<br>Use Coaching + Logging to generate one.</div>';
+      return;
+    }
+    document.getElementById('header-count').textContent = sessions.length + ' session' + (sessions.length !== 1 ? 's' : '');
+    var html = '';
+    for (var i = 0; i < sessions.length; i++) {
+      var s = sessions[i];
+      var isOpen = expanded === s.folder;
+      html += '<div class="sess-card" id="card-' + i + '">';
+      html += '<div class="sess-header" onclick="toggle(' + i + ')">';
+      html += '<span class="sess-num">' + sessionNum(s.folder) + '</span>';
+      html += '<div class="sess-info">'
+            + '<div class="sess-date">' + folderToDate(s.folder) + '</div>'
+            + '<div class="sess-sub">' + s.num_laps + ' lap' + (s.num_laps !== 1 ? 's' : '')
+            + (s.report_summary && s.report_summary.best_skill_area ? ' &middot; Best: ' + s.report_summary.best_skill_area : '')
+            + '</div>'
+            + '</div>';
+      html += '<div class="sess-right">'
+            + (s.report_available
+               ? '<span class="badge-report">Report &#10003;</span>'
+               : '<span class="badge-none">No report</span>')
+            + '<span class="chevron">' + (isOpen ? '&#9650;' : '&#9660;') + '</span>'
+            + '</div>';
+      html += '</div>'; // .sess-header
+      if (isOpen) {
+        html += '<div class="sess-body" id="body-' + i + '">';
+        html += renderBody(s, i);
+        html += '</div>';
+      }
+      html += '</div>'; // .sess-card
+    }
+    list.innerHTML = html;
+  }
+
+  function renderBody(s, idx) {
+    if (!s.report_available) {
+      return '<div class="no-report">No report for this session.<br>Use <b>Coaching + Logging</b> next time.</div>';
+    }
+    var r = reportCache[s.folder];
+    if (!r) return '<div class="loading">Loading report&#8230;</div>';
+    if (r === 'error') return '<div class="no-report">Failed to load report.</div>';
+
+    var html = '';
+
+    // key stats row
+    html += '<div class="report-grid">';
+    if (r.laps_analyzed) {
+      html += chip('Laps', r.laps_analyzed, '');
+    }
+    if (r.best_skill_area) {
+      html += chip('Best Skill', r.best_skill_area, '');
+    }
+    if (r.optimal_lap && r.optimal_lap.sectors_best) {
+      html += chip('Optimal Lap', fmtTime(r.optimal_lap.sectors_best), 'c-purple');
+    }
+    if (r.consistency && typeof r.consistency.lap_sigma === 'number' && isFinite(r.consistency.lap_sigma)) {
+      html += chip('Lap &sigma;', '&plusmn;' + r.consistency.lap_sigma.toFixed(3) + 's', '');
+    }
+    html += '</div>';
+
+    // skill scores
+    var skills = r.skill_scores || {};
+    var skillKeys = Object.keys(skills);
+    if (skillKeys.length > 0) {
+      html += '<div class="section-title">Skill Scores</div>';
+      for (var k = 0; k < skillKeys.length; k++) {
+        var name = skillKeys[k];
+        var val  = Math.max(0, Math.min(100, typeof skills[name] === 'number' ? skills[name] : 0));
+        html += '<div class="skill-row">'
+              + '<span class="skill-name">' + name + '</span>'
+              + '<div class="skill-bar"><div class="skill-fill" style="width:' + val + '%"></div></div>'
+              + '<span class="skill-num">' + Math.round(val) + '</span>'
+              + '</div>';
+      }
+    }
+
+    // time losses
+    var losses = r.biggest_time_loss_corners || [];
+    if (losses.length > 0) {
+      html += '<div class="section-title">Top Time Losses</div>';
+      for (var l = 0; l < losses.length; l++) {
+        html += '<div class="focus-row">Turn ' + losses[l].turn + ' &nbsp; <span style="color:#ef5350;font-weight:700">+' + losses[l].avg_delta.toFixed(3) + 's</span></div>';
+      }
+    }
+
+    // practice focuses
+    var focuses = r.practice_focuses || [];
+    if (focuses.length > 0) {
+      html += '<div class="section-title">Practice Focus</div>';
+      for (var f = 0; f < focuses.length; f++) {
+        html += '<div class="focus-row">&#9658; ' + focuses[f] + '</div>';
+      }
+    }
+
+    // driver profile tags
+    var tags = r.driver_profile_tags || [];
+    if (tags.length > 0) {
+      html += '<div class="section-title">Driver Profile</div>';
+      html += '<div class="tag-list">';
+      for (var t = 0; t < tags.length; t++) {
+        html += '<span class="tag">' + tags[t] + '</span>';
+      }
+      html += '</div>';
+    }
+
+    return html;
+  }
+
+  function chip(label, value, cls) {
+    return '<div class="report-chip">'
+         + '<div class="chip-label">' + label + '</div>'
+         + '<div class="chip-val ' + cls + '">' + value + '</div>'
+         + '</div>';
+  }
+
+  function toggle(idx) {
+    var s = sessions[idx];
+    if (expanded === s.folder) {
+      expanded = null;
+      renderSessions();
+      return;
+    }
+    expanded = s.folder;
+    renderSessions();
+    if (s.report_available && !reportCache[s.folder]) {
+      fetchReport(s.folder, idx);
+    }
+  }
+
+  function fetchReport(folder, idx) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/session/' + folder + '/report', true);
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      if (xhr.status === 200) {
+        try {
+          var d = JSON.parse(xhr.responseText);
+          reportCache[folder] = (d.ok && d.report) ? d.report : 'error';
+        } catch(e) { reportCache[folder] = 'error'; }
+      } else {
+        reportCache[folder] = 'error';
+      }
+      if (expanded === folder) renderSessions();
+    };
+    xhr.send();
+  }
+
+  // load sessions on page init
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', '/sessions', true);
+  xhr.onreadystatechange = function() {
+    if (xhr.readyState !== 4) return;
+    if (xhr.status === 200) {
+      try {
+        var data = JSON.parse(xhr.responseText);
+        // newest first
+        sessions = data.reverse();
+        renderSessions();
+      } catch(e) {
+        document.getElementById('list').innerHTML = '<div class="empty">Failed to load sessions.</div>';
+      }
+    } else {
+      document.getElementById('list').innerHTML = '<div class="empty">Failed to load sessions.</div>';
+    }
+  };
+  xhr.send();
+</script>
+</body>
+</html>

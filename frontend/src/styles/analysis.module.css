@@ -61,6 +61,21 @@
   flex-shrink: 0;
 }
 
+.savePlotBtn {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(105, 240, 174, 0.12);
+  color: var(--green);
+  border: 1px solid rgba(105, 240, 174, 0.3);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.savePlotBtn:disabled {
+  opacity: 0.5;
+}
+
 /* ── scrollable content ── */
 .content {
   flex: 1;
@@ -151,6 +166,76 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+
+/* Old iPad Safari (legacy path only): constrain map and make lap list scrollable */
+/* clamp() is NOT supported on iOS ≤ 12 Safari, so we use explicit px heights.       */
+/* height: 100% inside a flex child also needs an explicit ancestor height to resolve. */
+
+.legacyOldIos .content {
+  overflow-y: scroll;
+  -webkit-overflow-scrolling: touch;
+}
+
+.legacyOldIos .mapSection {
+  align-items: start;
+  min-height: 0;
+}
+
+/* map wrapper: fixed 260 px tall, clips overflow */
+.legacyOldIos .mapWrap {
+  height: 260px;
+  max-height: 260px;
+  overflow: hidden;
+}
+
+/* canvas area: 260 px minus ~56 px for toggle + gap + legend = 200 px */
+.legacyOldIos .mapCanvas {
+  height: 200px;
+  max-height: 200px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* lap column: same fixed height so grid row aligns */
+.legacyOldIos .lapSection {
+  height: 260px;
+  max-height: 260px;
+  overflow: hidden;
+}
+
+/* lap list: explicit max-height so scroll works without relying on flex resolution */
+.legacyOldIos .lapList {
+  max-height: 224px;
+  overflow-y: scroll;
+  -webkit-overflow-scrolling: touch;
+}
+
+.legacyOldIos .cardTitle {
+  flex-shrink: 0;
+}
+
+.legacyOldIos .lapRow {
+  flex-shrink: 0;
+}
+
+/* narrow phones: single-column layout, shrink heights */
+@media (max-width: 600px) {
+  .legacyOldIos .mapWrap {
+    height: 200px;
+    max-height: 200px;
+  }
+  .legacyOldIos .mapCanvas {
+    height: 148px;
+    max-height: 148px;
+  }
+  .legacyOldIos .lapSection {
+    height: 200px;
+    max-height: 200px;
+  }
+  .legacyOldIos .lapList {
+    max-height: 164px;
+  }
 }
 
 .lapRow {

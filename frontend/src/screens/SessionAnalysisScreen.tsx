@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useToast } from '../context/ToastContext'
+import { useRoutePrefix } from '../hooks/useRoutePrefix'
 import AnalysisCanvas, { type HeatmapPoint } from '../components/AnalysisCanvas'
 import styles from '../styles/analysis.module.css'
 
@@ -67,16 +68,50 @@ function sessionNum(folder: string): string {
   return m ? `#${parseInt(m[1])}` : folder
 }
 
+function isIos12OrOlder(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent || ''
+  if (!/iPad|iPhone|iPod/i.test(ua)) return false
+  const m = ua.match(/OS (\d+)_/)
+  if (!m) return false
+  const major = parseInt(m[1], 10)
+  return Number.isFinite(major) && major <= 12
+}
+
 // ─── main screen ──────────────────────────────────────────────────────────────
 
 export default function SessionAnalysisScreen() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const navigate = useNavigate()
+  const { withPrefix } = useRoutePrefix()
   const { addToast } = useToast()
 
   const [data, setData] = useState<AnalysisData | null>(null)
   const [loading, setLoading] = useState(true)
   const [mapMode, setMapMode] = useState<'speed' | 'inputs'>('speed')
+  const [saving, setSaving] = useState(false)
+  const hasResizeObserver =
+    typeof window !== 'undefined' && 'ResizeObserver' in window
+  const isLegacyOldSafari =
+    isIos12OrOlder() || !hasResizeObserver
+
+  const savePlot = async () => {
+    if (!sessionId) return
+    setSaving(true)
+    try {
+      const res = await fetch(`/session/${sessionId}/save-plot`, { method: 'POST' })
+      const d = await res.json()
+      if (d.ok) {
+        addToast(`Plot saved → session_data/${sessionId}/analysis.png`, 'success')
+      } else {
+        addToast(`Save failed: ${d.error ?? 'unknown error'}`, 'error')
+      }
+    } catch {
+      addToast('Save plot request failed', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   useEffect(() => {
     if (!sessionId) return
@@ -97,9 +132,9 @@ export default function SessionAnalysisScreen() {
 
   if (loading || !data) {
     return (
-      <div className={styles.screen}>
+      <div className={`${styles.screen} ${isLegacyOldSafari ? styles.legacyOldIos : ''}`}>
         <div className={styles.topBar}>
-          <button className={styles.backBtn} onClick={() => navigate('/sessions')}>← Sessions</button>
+          <button className={styles.backBtn} onClick={() => navigate(withPrefix('/sessions'))}>← Sessions</button>
           <div className={styles.topCenter}>
             <span className={styles.sessionDate}>{loading ? 'Loading…' : 'Failed to load'}</span>
           </div>
@@ -120,10 +155,10 @@ export default function SessionAnalysisScreen() {
   // ── render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className={styles.screen}>
+    <div className={`${styles.screen} ${isLegacyOldSafari ? styles.legacyOldIos : ''}`}>
       {/* ── top bar ── */}
       <div className={styles.topBar}>
-        <button className={styles.backBtn} onClick={() => navigate('/sessions')}>← Sessions</button>
+        <button className={styles.backBtn} onClick={() => navigate(withPrefix('/sessions'))}>← Sessions</button>
         <div className={styles.topCenter}>
           <span className={styles.sessionNum}>{sessionNum(data.folder)}</span>
           <span className={styles.sessionDate}>{folderToDate(data.folder)}</span>
@@ -131,6 +166,13 @@ export default function SessionAnalysisScreen() {
         {data.pb_time != null && (
           <span className={styles.pbChip}>Best {fmt(data.pb_time)}</span>
         )}
+        <button
+          className={styles.savePlotBtn}
+          onClick={savePlot}
+          disabled={saving}
+        >
+          {saving ? 'Saving…' : 'Save Plot'}
+        </button>
       </div>
 
       <div className={styles.content}>

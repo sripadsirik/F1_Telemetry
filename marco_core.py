@@ -2860,7 +2860,7 @@ def analyze_session(session_path):
     return df, lap_info, fastest
 
 
-def plot_session(df, lap_info, fastest_lap_num, session_path):
+def plot_session(df, lap_info, fastest_lap_num, session_path, show=True):
     """Generate visualization plots."""
     if not PLOTTING_AVAILABLE:
         print("  matplotlib not available - skipping plots")
@@ -2932,7 +2932,10 @@ def plot_session(df, lap_info, fastest_lap_num, session_path):
     output_file = os.path.join(session_path, 'analysis.png')
     plt.savefig(output_file, dpi=150, bbox_inches='tight')
     print(f"\n  Plot saved: {output_file}")
-    plt.show()
+    if show:
+        plt.show()
+    plt.close()
+    return output_file
 
 
 # =============================================================================
